@@ -452,17 +452,19 @@ with tab2:
         else:
             for doc in docs_list:
                 tags_badge = "".join([f'<span style="background: rgba(127,0,255,0.15); border: 1px solid rgba(127,0,255,0.3); color: #c8a2ff; font-size: 0.75rem; padding: 2px 8px; border-radius: 10px; margin-right: 5px; font-weight:600;">#{tag}</span>' for tag in doc["tags"]])
+                tags_html = f'<div style="margin-top: 5px;">{tags_badge}</div>' if tags_badge else ""
+                
+                # 將 summary 內的換行替換為 <br> 以免被 Markdown 解析器錯誤分段
+                safe_summary = doc["summary"].replace("\\n", "<br>")
                 
                 st.markdown(f"""
                 <div class="glass-card" style="padding: 16px; margin-bottom: 12px; border-radius: 12px;">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-weight: 700; color: #00f2fe; font-size: 1.05rem;">📄 {doc["filename"]}</span>
-                        <span style="background: rgba(255,255,255,0.05); color: #a2a2b5; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px;">{doc["file_type"].upper()}</span>
+                        <span style="font-weight: 700; color: #00f2fe; font-size: 1.05rem;">📄 {{doc["filename"]}}</span>
+                        <span style="background: rgba(255,255,255,0.05); color: #a2a2b5; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px;">{{doc["file_type"].upper()}}</span>
                     </div>
-                    <p style="font-size: 0.85rem; color: #a2a2b5; margin-top: 8px; margin-bottom: 10px;">{doc["summary"]}</p>
-                    <div style="margin-top: 5px;">
-                        {tags_badge}
-                    </div>
+                    <p style="font-size: 0.85rem; color: #a2a2b5; margin-top: 8px; margin-bottom: 10px;">{{safe_summary}}</p>
+                    {tags_html}
                 </div>
                 """, unsafe_allow_html=True)
                 

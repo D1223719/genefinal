@@ -78,7 +78,12 @@ def process_uploaded_file(file_path: Path, filename: str, file_type: str, doc_id
         full_text = ""
         
         if file_type == "pdf":
-            loader = PyPDFLoader(str(file_path))
+            try:
+                from langchain_community.document_loaders import PyMuPDFLoader
+                loader = PyMuPDFLoader(str(file_path))
+            except ImportError:
+                loader = PyPDFLoader(str(file_path))
+                
             pages = loader.load()
             
             # 用於摘要萃取的完整文本 (限制前 6000 字避免 token 爆量)
@@ -100,8 +105,9 @@ def process_uploaded_file(file_path: Path, filename: str, file_type: str, doc_id
             
         print(f"Document {filename} split into {len(lc_docs)} chunks.")
         
-        if not lc_docs:
-            raise ValueError("No text content could be extracted from the file.")
+        # 檢查是否有萃取出實質文字
+        if not lc_docs or not any(doc.page_content.strip() for doc in lc_docs):
+            raise ValueError("此檔案內缺乏可萃取的文字內容 (可能是純圖片掃描檔)。請上傳具備文字層的 PDF 或 Markdown 檔案。")
 
         # 2. 結構萃取 (Extractor)
         extraction = extractor_tool(full_text)
@@ -171,6 +177,13 @@ async def upload_file(
         
     # 建立 SQLite Document Metadata
     user_id = get_default_user_id()
+    
+    # 若檔案已存在，先刪除舊紀錄避免 UNIQUE constraint 錯誤
+    existing_doc = db.query(DBDocument).filter(DBDocument.filename == filename).first()
+    if existing_doc:
+        db.delete(existing_doc)
+        db.commit()
+        
     db_doc = DBDocument(
         user_id=user_id,
         filename=filename,
@@ -235,6 +248,13 @@ async def chat_endpoint(request: ChatRequest):
         final_state = agent_app.invoke(initial_state)
         ai_reply_msg = final_state["messages"][-1]
         ai_reply = ai_reply_msg.content
+        
+        # 確保 ai_reply 是字串 (Gemini有時會回傳包含 dict 的 list)
+        if isinstance(ai_reply, list):
+            ai_reply = "".join(item.get("text", "") if isinstance(item, dict) else str(item) for item in ai_reply)
+        elif not isinstance(ai_reply, str):
+            ai_reply = str(ai_reply)
+            
         intent = final_state.get("intent", "RAG")
         quiz_data = final_state.get("quiz_data", {})
         
