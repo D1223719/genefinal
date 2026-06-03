@@ -56,6 +56,7 @@ class Conversation(Base):
     __tablename__ = "conversations"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    session_id = Column(String(50), nullable=False, default="default", index=True)
     role = Column(String(10), nullable=False)  # 'user', 'assistant', 'system'
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -123,12 +124,12 @@ def get_default_user_id() -> int:
     finally:
         db.close()
 
-def save_chat_message(role: str, content: str) -> Conversation:
+def save_chat_message(role: str, content: str, session_id: str = "default") -> Conversation:
     """儲存對話紀錄"""
     db = SessionLocal()
     try:
         user_id = get_default_user_id()
-        msg = Conversation(user_id=user_id, role=role, content=content)
+        msg = Conversation(user_id=user_id, session_id=session_id, role=role, content=content)
         db.add(msg)
         db.commit()
         db.refresh(msg)
@@ -136,17 +137,59 @@ def save_chat_message(role: str, content: str) -> Conversation:
     finally:
         db.close()
 
-def get_chat_history(limit: int = 20) -> List[Dict[str, Any]]:
-    """獲取最近的對話歷史"""
+def get_chat_history(session_id: str = "default", limit: int = 50) -> List[Dict[str, Any]]:
+    """獲取特定 session 的對話歷史"""
     db = SessionLocal()
     try:
         user_id = get_default_user_id()
         msgs = db.query(Conversation)\
                  .filter(Conversation.user_id == user_id)\
+                 .filter(Conversation.session_id == session_id)\
                  .order_by(Conversation.created_at.asc())\
                  .limit(limit)\
                  .all()
         return [{"role": m.role, "content": m.content, "created_at": m.created_at.isoformat()} for m in msgs]
+    finally:
+        db.close()
+
+def get_chat_sessions() -> List[Dict[str, Any]]:
+    """獲取使用者的所有聊天 Session 清單"""
+    db = SessionLocal()
+    try:
+        user_id = get_default_user_id()
+        from sqlalchemy import func
+        
+        sessions = db.query(
+            Conversation.session_id,
+            func.max(Conversation.created_at).label('last_active')
+        ).filter(Conversation.user_id == user_id)\
+         .group_by(Conversation.session_id)\
+         .order_by(func.max(Conversation.created_at).desc())\
+         .all()
+         
+        result = []
+        for s in sessions:
+            first_msg = db.query(Conversation)\
+                          .filter(Conversation.session_id == s.session_id, Conversation.role == 'user')\
+                          .order_by(Conversation.created_at.asc())\
+                          .first()
+            preview = first_msg.content[:20] + "..." if first_msg and len(first_msg.content) > 20 else (first_msg.content if first_msg else "新對話")
+            
+            result.append({
+                "session_id": s.session_id,
+                "preview": preview,
+                "last_active": s.last_active.isoformat() if s.last_active else ""
+            })
+        return result
+    finally:
+        db.close()
+
+def delete_chat_session(session_id: str):
+    """刪除特定 session_id 的所有對話紀錄"""
+    db = SessionLocal()
+    try:
+        db.query(Conversation).filter(Conversation.session_id == session_id).delete()
+        db.commit()
     finally:
         db.close()
 

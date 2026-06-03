@@ -12,6 +12,7 @@ from app.config import settings
 from app.database import (
     init_db, get_db, save_chat_message, get_chat_history, 
     get_weaknesses, update_weakness, get_knowledge_graph, 
+    get_chat_sessions, delete_chat_session,
     Document as DBDocument, SessionLocal, get_default_user_id
 )
 from app.vector_store import get_vector_store, persist_vector_store, get_embeddings
@@ -50,6 +51,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: str = "default"
 
 class QuizSubmitRequest(BaseModel):
     topic: str
@@ -232,9 +234,10 @@ async def chat_endpoint(request: ChatRequest):
     同時自動將對話寫入 SQL 歷史對話資料表（短期記憶）。
     """
     user_msg = request.message
+    session_id = request.session_id
     
     # 1. 儲存使用者對話紀錄
-    save_chat_message("user", user_msg)
+    save_chat_message("user", user_msg, session_id=session_id)
     
     # 2. 調用 LangGraph 工作流
     initial_state = {
@@ -259,7 +262,7 @@ async def chat_endpoint(request: ChatRequest):
         quiz_data = final_state.get("quiz_data", {})
         
         # 3. 儲存 AI 回覆紀錄
-        save_chat_message("assistant", ai_reply)
+        save_chat_message("assistant", ai_reply, session_id=session_id)
         
         return {
             "status": "success",
@@ -272,7 +275,7 @@ async def chat_endpoint(request: ChatRequest):
         traceback.print_exc()
         error_reply = f"抱歉，在處理您的問答時發生 AI 模型調用錯誤：{str(e)}"
         try:
-            save_chat_message("assistant", error_reply)
+            save_chat_message("assistant", error_reply, session_id=session_id)
         except Exception:
             pass
         return {
@@ -284,10 +287,22 @@ async def chat_endpoint(request: ChatRequest):
 
 
 @app.get("/api/history")
-async def get_history():
+async def get_history(session_id: str = "default"):
     """獲取短期對話歷史紀錄"""
-    history = get_chat_history(limit=30)
+    history = get_chat_history(session_id=session_id, limit=30)
     return {"history": history}
+
+@app.get("/api/chat/sessions")
+async def get_sessions():
+    """獲取使用者的對話紀錄清單"""
+    sessions = get_chat_sessions()
+    return {"sessions": sessions}
+
+@app.delete("/api/chat/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """刪除指定 session 的對話紀錄"""
+    delete_chat_session(session_id)
+    return {"status": "success", "message": "對話紀錄已刪除"}
 
 
 @app.get("/api/graph")
