@@ -428,23 +428,46 @@ with tab2:
         st.markdown('<h3 style="margin-top: 10px;">📤 上傳與管理知識文件</h3>', unsafe_allow_html=True)
         
         # 拖拉上傳
-        uploaded_file = st.file_uploader("選擇 PDF 或 Markdown 檔案匯入知識庫 (限 PDF/MD/TXT)", type=["pdf", "md", "txt"])
+        uploaded_files = st.file_uploader("選擇 PDF 或 Markdown 檔案匯入知識庫 (限 PDF/MD/TXT，可選多個檔案)", type=["pdf", "md", "txt"], accept_multiple_files=True)
         
-        if uploaded_file is not None:
+        if uploaded_files:
             if st.button("🚀 開始匯入知識管道", type="primary", use_container_width=True):
-                with st.spinner("正在上傳並觸發背景處理管線..."):
-                    res = upload_file_to_api(uploaded_file)
-                    
-                if res.get("status") == "success":
-                    st.success(res.get("message"))
-                    st.balloons()
-                    time.sleep(2)
-                    st.rerun()
-                else:
-                    st.error(f"上傳失敗：{res.get('message')}")
+                success_count = 0
+                error_messages = []
+                
+                with st.spinner(f"正在上傳並觸發背景處理管線 (共 {len(uploaded_files)} 個檔案)..."):
+                    for uploaded_file in uploaded_files:
+                        res = upload_file_to_api(uploaded_file)
+                        if res.get("status") == "success":
+                            success_count += 1
+                        else:
+                            # 讀取 detail 或 message
+                            err_msg = res.get("message") or res.get("detail") or "未知錯誤"
+                            error_messages.append(f"「{uploaded_file.name}」上傳失敗：{err_msg}")
+                            
+                if success_count > 0:
+                    st.success(f"🎉 成功啟動 {success_count} 個檔案的背景解析與圖譜分析！")
+                    if not error_messages:
+                        st.balloons()
+                        time.sleep(2)
+                        st.rerun()
+                        
+                if error_messages:
+                    for err in error_messages:
+                        st.error(err)
+                    if success_count > 0:
+                        time.sleep(2)
+                        st.rerun()
                     
         st.markdown("---")
-        st.markdown("#### 📂 知識庫已匯入文檔清單")
+        
+        # 建立標題與重新整理按鈕的並排佈局
+        col_title, col_btn = st.columns([3, 1])
+        with col_title:
+            st.markdown("#### 📂 知識庫已匯入文檔清單")
+        with col_btn:
+            if st.button("🔄 重新整理列表", key="refresh_docs_list", use_container_width=True):
+                st.rerun()
         
         docs_list = get_documents_list()
         if not docs_list:
