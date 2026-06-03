@@ -3,6 +3,8 @@ import requests
 import os
 import json
 import time
+import uuid
+import markdown
 from typing import Dict, Any, List
 
 # 設定網頁標題與外觀
@@ -189,13 +191,29 @@ def upload_file_to_api(uploaded_file) -> Dict[str, Any]:
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-def send_chat_message(message: str) -> Dict[str, Any]:
+def send_chat_message(message: str, session_id: str = "default") -> Dict[str, Any]:
     """發送聊天訊息"""
     try:
-        res = requests.post(f"{API_URL}/chat", json={"message": message})
+        res = requests.post(f"{API_URL}/chat", json={"message": message, "session_id": session_id})
         return res.json()
     except Exception as e:
         return {"status": "error", "reply": f"連線至後端失敗：{str(e)}", "intent": "RAG"}
+
+def get_chat_sessions_api() -> List[Dict[str, Any]]:
+    """獲取歷史對話清單"""
+    try:
+        res = requests.get(f"{API_URL}/chat/sessions")
+        return res.json().get("sessions", [])
+    except Exception:
+        return []
+
+def delete_session_api(session_id: str) -> bool:
+    """刪除指定對話紀錄"""
+    try:
+        res = requests.delete(f"{API_URL}/chat/sessions/{session_id}")
+        return res.status_code == 200
+    except Exception:
+        return False
 
 def submit_quiz_result(topic: str, correct: bool) -> Dict[str, Any]:
     """提交測驗答題狀態"""
@@ -252,6 +270,8 @@ if "quiz_result_correct" not in st.session_state:
     st.session_state.quiz_result_correct = None
 if "trigger_api_key_warn" not in st.session_state:
     st.session_state.trigger_api_key_warn = False
+if "current_session_id" not in st.session_state:
+    st.session_state.current_session_id = str(uuid.uuid4())
 
 # ==========================================
 # 4. 側邊欄 (Sidebar) 設計
@@ -288,6 +308,36 @@ with st.sidebar:
                 st.rerun()
             else:
                 st.error("重置失敗！")
+                
+    st.markdown("---")
+    st.markdown("### 💬 對話歷史紀錄")
+    
+    if st.button("📝 新增對話", type="primary", use_container_width=True):
+        st.session_state.current_session_id = str(uuid.uuid4())
+        st.session_state.chat_messages = []
+        st.rerun()
+
+    sessions = get_chat_sessions_api()
+    if not sessions:
+        st.info("尚無歷史紀錄")
+    else:
+        st.markdown("<div style='max-height: 300px; overflow-y: auto;'>", unsafe_allow_html=True)
+        for s in sessions:
+            col1, col2 = st.columns([5, 1])
+            with col1:
+                btn_style = "secondary" if s["session_id"] != st.session_state.current_session_id else "primary"
+                if st.button(f"{s['preview']}", key=f"sel_{s['session_id']}", type=btn_style, use_container_width=True):
+                    st.session_state.current_session_id = s["session_id"]
+                    st.session_state.chat_messages = []
+                    st.rerun()
+            with col2:
+                if st.button("🗑️", key=f"del_{s['session_id']}"):
+                    delete_session_api(s["session_id"])
+                    if st.session_state.current_session_id == s["session_id"]:
+                        st.session_state.current_session_id = str(uuid.uuid4())
+                        st.session_state.chat_messages = []
+                    st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
                 
     st.markdown("---")
     st.markdown('<p style="color: #555566; font-size: 0.8rem; text-align: center;">2026 AI 個人知識管理 Agent 期末專題 © Jeff</p>', unsafe_allow_html=True)
@@ -337,7 +387,7 @@ with tab1:
         # 如果 state 空白，先去撈後端 API 取得現有歷史
         if not st.session_state.chat_messages:
             try:
-                hist_res = requests.get(f"{API_URL}/history").json()
+                hist_res = requests.get(f"{API_URL}/history?session_id={st.session_state.current_session_id}").json()
                 for h in hist_res.get("history", []):
                     st.session_state.chat_messages.append({"role": h["role"], "content": h["content"]})
             except Exception:
@@ -346,7 +396,8 @@ with tab1:
         # 顯示歷史訊息
         for msg in st.session_state.chat_messages:
             if msg["role"] == "user":
-                st.markdown(f'<div class="chat-bubble-user">{msg["content"]}</div>', unsafe_allow_html=True)
+                user_content = msg["content"].replace("\n", "<br>")
+                st.markdown(f'<div class="chat-bubble-user">{user_content}</div>', unsafe_allow_html=True)
             else:
                 # 處理來源標註並在 Streamlit 中更精美地呈現
                 content = msg["content"]
@@ -355,8 +406,12 @@ with tab1:
                 import re
                 source_patterns = re.findall(r'\[來源:\s*([^,\]]+),\s*頁碼:\s*([^\]]+)\]', content)
                 
-                # 將回答中的 [來源: ...] 清除或做標籤處理，我們選擇將其渲染成漂亮的 Chips 放在氣泡下方
+                # 將回答中的 [來源: ...] 清除或做標籤處理
                 cleaned_content = re.sub(r'\[來源:\s*[^\]]+\]', '', content)
+                
+                # 為了避免 markdown parser 在 div 內遇到空行提早結束導致 </div> 外漏
+                # 這裡強制先轉為 HTML 再放入 div 中
+                html_content = markdown.markdown(cleaned_content, extensions=['fenced_code', 'tables'])
                 
                 chips_html = ""
                 if source_patterns:
@@ -367,7 +422,7 @@ with tab1:
                 
                 st.markdown(f"""
                 <div class="chat-bubble-assistant">
-                    <div>{cleaned_content}</div>
+                    <div>{html_content}</div>
                     {chips_html}
                 </div>
                 """, unsafe_allow_html=True)
@@ -376,12 +431,13 @@ with tab1:
     if prompt := st.chat_input("詢問助教：例如「請解釋 Transformer 的 Self-Attention 機制」"):
         # 顯示使用者輸入
         with chat_container:
-            st.markdown(f'<div class="chat-bubble-user">{prompt}</div>', unsafe_allow_html=True)
+            user_content = prompt.replace("\n", "<br>")
+            st.markdown(f'<div class="chat-bubble-user">{user_content}</div>', unsafe_allow_html=True)
         st.session_state.chat_messages.append({"role": "user", "content": prompt})
         
         # 呼叫 API 取得 AI 回覆
         with st.spinner("AI 助教思考中..."):
-            reply_data = send_chat_message(prompt)
+            reply_data = send_chat_message(prompt, session_id=st.session_state.current_session_id)
             
         reply = reply_data.get("reply", "連線失敗。")
         intent = reply_data.get("intent", "RAG")
@@ -392,6 +448,9 @@ with tab1:
             source_patterns = re.findall(r'\[來源:\s*([^,\]]+),\s*頁碼:\s*([^\]]+)\]', reply)
             cleaned_reply = re.sub(r'\[來源:\s*[^\]]+\]', '', reply)
             
+            # 使用 markdown 套件先轉為 HTML，避免 </div> 結尾外漏
+            html_reply = markdown.markdown(cleaned_reply, extensions=['fenced_code', 'tables'])
+            
             chips_html = ""
             if source_patterns:
                 chips_html = "<div style='margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;'>"
@@ -401,7 +460,7 @@ with tab1:
                 
             st.markdown(f"""
             <div class="chat-bubble-assistant">
-                <div>{cleaned_reply}</div>
+                <div>{html_reply}</div>
                 {chips_html}
             </div>
             """, unsafe_allow_html=True)
@@ -475,17 +534,19 @@ with tab2:
         else:
             for doc in docs_list:
                 tags_badge = "".join([f'<span style="background: rgba(127,0,255,0.15); border: 1px solid rgba(127,0,255,0.3); color: #c8a2ff; font-size: 0.75rem; padding: 2px 8px; border-radius: 10px; margin-right: 5px; font-weight:600;">#{tag}</span>' for tag in doc["tags"]])
+                tags_html = f'<div style="margin-top: 5px;">{tags_badge}</div>' if tags_badge else ""
+                
+                # 將 summary 內的換行替換為 <br> 以免被 Markdown 解析器錯誤分段
+                safe_summary = doc["summary"].replace("\\n", "<br>")
                 
                 st.markdown(f"""
                 <div class="glass-card" style="padding: 16px; margin-bottom: 12px; border-radius: 12px;">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-weight: 700; color: #00f2fe; font-size: 1.05rem;">📄 {doc["filename"]}</span>
-                        <span style="background: rgba(255,255,255,0.05); color: #a2a2b5; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px;">{doc["file_type"].upper()}</span>
+                        <span style="font-weight: 700; color: #00f2fe; font-size: 1.05rem;">📄 {{doc["filename"]}}</span>
+                        <span style="background: rgba(255,255,255,0.05); color: #a2a2b5; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px;">{{doc["file_type"].upper()}}</span>
                     </div>
-                    <p style="font-size: 0.85rem; color: #a2a2b5; margin-top: 8px; margin-bottom: 10px;">{doc["summary"]}</p>
-                    <div style="margin-top: 5px;">
-                        {tags_badge}
-                    </div>
+                    <p style="font-size: 0.85rem; color: #a2a2b5; margin-top: 8px; margin-bottom: 10px;">{{safe_summary}}</p>
+                    {tags_html}
                 </div>
                 """, unsafe_allow_html=True)
                 
