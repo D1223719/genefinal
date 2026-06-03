@@ -172,6 +172,14 @@ async def upload_file(
     if file_ext not in ["pdf", "md", "txt"]:
         raise HTTPException(status_code=400, detail="僅支援 PDF, MD 或 TXT 格式檔案。")
         
+    # 檢查資料庫中是否已存在同名檔案
+    existing_doc = db.query(DBDocument).filter(DBDocument.filename == filename).first()
+    if existing_doc:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"檔案「{filename}」已存在於知識庫中。若您想要重新上傳此檔案以重新解析，請先在左側邊欄點擊「🔄 一鍵重置系統資料」，或是將檔案重新命名後再次上傳。"
+        )
+        
     # 儲存實體檔案
     file_path = UPLOAD_DIR / filename
     with open(file_path, "wb") as buffer:
