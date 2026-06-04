@@ -1,272 +1,31 @@
-import json
+import sys
 
-import re
+with open('app/tools.py', 'r', encoding='utf-8') as f:
+    content = f.read()
 
-from typing import List, Dict, Any, Optional
+target_str = "def quiz_master_tool(user_id: int, topic: Optional[str] = None)"
+index = content.find(target_str)
+if index == -1:
+    print("Target string not found!")
+    sys.exit(1)
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+prefix = content[:index]
 
-from langchain_core.messages import SystemMessage, HumanMessage
-
-from app.config import settings
-
-from app.database import SessionLocal, Document, KnowledgeGraph, WeaknessMemory, add_graph_edge
-
-
-
-# 初始化 Gemini LLM
-
-def get_llm(temperature: float = 0.2) -> ChatGoogleGenerativeAI:
-
-    """初始化並獲取 ChatGoogleGenerativeAI 實例"""
-
-    api_key = settings.GEMINI_API_KEY
-
-    if not api_key or api_key == "your_gemini_api_key_here":
-
-        raise ValueError("GEMINI_API_KEY is not configured. Please edit .env file and set your API key.")
-
-    
-
-    return ChatGoogleGenerativeAI(
-
-        model=settings.MODEL_NAME,
-
-        google_api_key=api_key,
-
-        temperature=temperature
-
-    )
-
-
-
-def extract_text_content(content) -> str:
-
-    """
-
-    安全擷取 LLM 回覆的文字內容。
-
-    新版 Gemini 模型（3.5+）的 response.content 可能回傳 list 結構（含 type/text/extras），
-
-    而非純字串。此函式統一將其轉為字串。
-
-    """
-
-    if isinstance(content, str):
-
-        return content
-
-    if isinstance(content, list):
-
-        # 從結構化回覆中提取所有 text 欄位
-
-        texts = []
-
-        for block in content:
-
-            if isinstance(block, dict) and "text" in block:
-
-                texts.append(block["text"])
-
-            elif isinstance(block, str):
-
-                texts.append(block)
-
-        return "\n".join(texts) if texts else str(content)
-
-    return str(content)
-
-
-
-def clean_json_string(text: str) -> str:
-
-    """清理 LLM 回傳字串中的 Markdown json 標記，使其成為標準 JSON"""
-
-    # 移除 ```json ... ``` 標記
-
-    text = re.sub(r"```json\s*", "", text)
-
-    text = re.sub(r"```\s*$", "", text)
-
-    return text.strip()
-
-
-
-# ==========================================
-
-# 1. ExtractorTool
-
-# ==========================================
-
-
-
-def extractor_tool(text: str) -> Dict[str, Any]:
-
-    """
-
-    ExtractorTool: 讀取文本，呼叫 LLM 進行深度分析，生成摘要與關鍵標籤。
-
-    """
-
-    llm = get_llm(temperature=0.1)
-
-    
-
-    prompt = f"""
-
-你是一個專業的學術與文件分析專家。請閱讀以下文本，並完成兩項任務：
-
-1. 精煉出 3 至 4 句的繁體中文摘要。
-
-2. 提取出 3 到 6 個代表此文件核心概念的「繁體中文」關鍵標籤 (Tags)（例如：注意力機制、Transformer、深度學習等，每個標籤為短辭，長度小於 10 字）。
-
-
-
-請嚴格遵循以下 JSON 格式回傳，不要有任何其他敘述：
-
-{{
-
-  "summary": "這裡填寫繁體中文摘要內容...",
-
-  "tags": ["標籤一", "標籤二", "標籤三"]
-
-}}
-
-
-
-待分析文本：
-
-{text[:4000]}  # 限制輸入字數以防超過 Context
-
-"""
-
-
-
-    try:
-
-        response = llm.invoke([HumanMessage(content=prompt)])
-        cleaned_content = clean_json_string(extract_text_content(response.content))
-        result = json.loads(cleaned_content)
-
-        
-
-        # 確保格式正確
-
-        if "summary" not in result:
-
-            result["summary"] = "無法產出有效摘要。"
-
-        if "tags" not in result or not isinstance(result["tags"], list):
-
-            result["tags"] = ["綜合知識"]
-
-            
-
-        return result
-
-    except Exception as e:
-
-        print(f"ExtractorTool error: {e}")
-
-        return {
-
-            "summary": f"處理文件時發生錯誤：{str(e)}",
-
-            "tags": ["錯誤回報"]
-
-        }
-
-
-
-# ==========================================
-
-# 2. GraphBuilderTool
-
-# ==========================================
-
-
-
-def graph_builder_tool(new_tags: List[str], summary: str) -> Dict[str, Any]:
-    """
-    GraphBuilderTool: 比對新標籤與庫中舊標籤，計算語意關聯，將其寫入 SQLite DB，並回傳關聯邊。
-    """
-    db = SessionLocal()
-    existing_tags = set()
-    try:
-        # 從現有 Documents 撈取所有已存在的標籤
-        docs = db.query(Document).all()
-        for doc in docs:
-            for tag in doc.tags:
-                existing_tags.add(tag)
-    finally:
-        db.close()
-        
-    # 移除新標籤，避免重疊
-    existing_tags_list = list(existing_tags - set(new_tags))
-    
-    llm = get_llm(temperature=0.2)
-    
-    prompt = f"""
-你是一個知識工程專家，負責建置結構化知識圖譜。
-現在有幾個剛從新文件中提取出的新概念標籤：{new_tags}。
-而知識庫中已經存在以下的舊概念標籤：{existing_tags_list[:20]}。
-
-文件摘要背景資訊：
-{summary}
-
-請根據語意與背景，推論這些新標籤之間，或是新舊標籤之間是否存在實質的知識關聯？
-有效的關係類型如下：
-- "depends_on" (A依賴B，例如：Transformer 依賴 注意力機制)
-- "contains" (A包含B，例如：深度學習 包含 卷積神經網路)
-- "relates_to" (A與B高度相關，例如：強化學習 與 Q-Learning)
-
-請輸出他們之間的關係邊界 (edges)，關係必須具備方向性與權重 (weight，0.0 到 1.0 的浮點數，代表關聯緊密度)。
-請嚴格遵循以下 JSON 格式回傳，不要有任何其他敘述：
-{{
-  "edges": [
-    {{
-      "source": "概念A",
-      "target": "概念B",
-      "relation": "depends_on / contains / relates_to",
-      "weight": 0.8
-    }}
-  ]
-}}
-"""
-
-    try:
-        response = llm.invoke([HumanMessage(content=prompt)])
-        cleaned_content = clean_json_string(extract_text_content(response.content))
-        result = json.loads(cleaned_content)
-        
-        edges = result.get("edges", [])
-        for edge in edges:
-            source = edge.get("source")
-            target = edge.get("target")
-            relation = edge.get("relation")
-            weight = edge.get("weight", 1.0)
-            if source and target and relation:
-                # 寫入 SQLite DB
-                add_graph_edge(source, target, relation, weight)
-                
-        return result
-    except Exception as e:
-        print(f"GraphBuilderTool error: {e}")
-        return {"edges": []}
-
-
-def quiz_master_tool(user_id: int, topic: Optional[str] = None, count: int = 1) -> Dict[str, Any]:
-    """
+new_code = """def quiz_master_tool(user_id: int, topic: Optional[str] = None, count: int = 1) -> Dict[str, Any]:
+    \"\"\"
     QuizMasterTool: 根據長期弱點記憶或指定主題，結合向量資料庫檢索到的文件上下文 (RAG)，產生具有深度的多選題。
     支援產生單題或多題。
-    """
+    \"\"\"
     db = SessionLocal()
     error_count = 0
     
     try:
         if not topic:
             # 找出使用者錯誤次數最高且大於 0 的弱點
-            weakness = db.query(WeaknessMemory)                         .filter(WeaknessMemory.user_id == user_id)                         .order_by(WeaknessMemory.error_count.desc())                         .first()
+            weakness = db.query(WeaknessMemory)\
+                         .filter(WeaknessMemory.user_id == user_id)\
+                         .order_by(WeaknessMemory.error_count.desc())\
+                         .first()
             if weakness and weakness.error_count > 0:
                 topic = weakness.topic
                 error_count = weakness.error_count
@@ -289,8 +48,8 @@ def quiz_master_tool(user_id: int, topic: Optional[str] = None, count: int = 1) 
         # 檢索 3 個相關 Chunks
         retrieved_chunks = hybrid_search(topic, limit=3)
         if retrieved_chunks:
-            context_str = "\n".join([
-                f"[來源檔名: {c['filename']}, 頁碼: {c['page_number']}]\n{c['text']}"
+            context_str = "\\n".join([
+                f"[來源檔名: {c['filename']}, 頁碼: {c['page_number']}]\\n{c['text']}"
                 for c in retrieved_chunks
             ])
             sources = [
@@ -307,17 +66,17 @@ def quiz_master_tool(user_id: int, topic: Optional[str] = None, count: int = 1) 
     llm = get_llm(temperature=0.4) # 適度創意與精確度的平衡
     
     if context_str:
-        context_prompt = f"""
+        context_prompt = f\"\"\"
 請特別參考以下從使用者上傳文檔中檢索出來的【相關上下文】來進行設計，確保考題的知識與細節完全符合文檔內容，不要出現文檔中沒有的通識或錯誤設定：
 
 【相關上下文】
 {{context_str}}
-"""
+\"\"\"
     else:
         context_prompt = "（目前無可用之本地文檔上下文，請根據您的一般學術知識出題）"
 
     if count <= 1:
-        prompt = f"""
+        prompt = f\"\"\"
 你是一個嚴謹的 AI 學習導師，負責為使用者出題以評估學習成效。
 請針對知識主題「{{topic}}」生成一題具有深度、概念理解性質的繁體中文多選題（四選一單選題）。
 
@@ -343,9 +102,9 @@ def quiz_master_tool(user_id: int, topic: Optional[str] = None, count: int = 1) 
   "answer": "正確答案字母",
   "explanation": "這題為什麼是這個答案的繁體中文解析..."
 }}}}
-"""
+\"\"\"
     else:
-        prompt = f"""
+        prompt = f\"\"\"
 你是一個嚴謹的 AI 學習導師，負責為使用者出題以評估學習成效。
 請針對知識主題「{{topic}}」生成共 {{count}} 題具有深度、概念理解性質的繁體中文多選題（四選一單選題）。
 
@@ -375,12 +134,13 @@ def quiz_master_tool(user_id: int, topic: Optional[str] = None, count: int = 1) 
     }}}},
     ...
   ]
-}}
-"""
+}}}}
+\"\"\"
 
     try:
         response = llm.invoke([HumanMessage(content=prompt)])
-        cleaned_content = clean_json_string(extract_text_content(response.content))
+        text_content = extract_text_content(response.content)
+        cleaned_content = clean_json_string(text_content)
         result = json.loads(cleaned_content)
         
         # 驗證輸出完整性
@@ -406,7 +166,7 @@ def quiz_master_tool(user_id: int, topic: Optional[str] = None, count: int = 1) 
             "A": "它是該學科領域的核心基礎組件之一，有助於系統化分析。",
             "B": "它只是一個暫時性的技術，目前已被完全取代。",
             "C": "它的設計初衷是為了解決所有與運算無關的問題。",
-            "D": "它不需要與 any 其他組件協同運作，可完全獨立發揮全部功能。"
+            "D": "它不需要與任何其他組件協同運作，可完全獨立發揮全部功能。"
         }
         fallback_explanation = f"「{topic}」在當前技術與知識體系中扮演著核心的角色。選項 A 正確指出了其作為核心組件的學術地位；其餘選項過於絕對或偏離事實。"
         
@@ -434,17 +194,17 @@ def quiz_master_tool(user_id: int, topic: Optional[str] = None, count: int = 1) 
             }
 
 def generate_study_guide(user_id: int, topic: str) -> Dict[str, Any]:
-    """
+    \"\"\"
     根據指定的主題與 RAG 檢索出的段落，生成一份結構化的繁體中文觀念複習導讀講義。
-    """
+    \"\"\"
     context_str = ""
     sources = []
     try:
         from app.vector_store import hybrid_search
         retrieved_chunks = hybrid_search(topic, limit=4)
         if retrieved_chunks:
-            context_str = "\n".join([
-                f"[來源檔名: {c['filename']}, 頁碼: {c['page_number']}]\n{c['text']}"
+            context_str = "\\n".join([
+                f"[來源檔名: {c['filename']}, 頁碼: {c['page_number']}]\\n{c['text']}"
                 for c in retrieved_chunks
             ])
             sources = [
@@ -461,14 +221,14 @@ def generate_study_guide(user_id: int, topic: str) -> Dict[str, Any]:
     llm = get_llm(temperature=0.3)
     
     if context_str:
-        context_prompt = f"""
+        context_prompt = f\"\"\"
 請根據以下從使用者上傳文檔中檢索出的【相關上下文】來生成這份講義，確保講義的內容精確且貼合文檔的描述：
 {{context_str}}
-"""
+\"\"\"
     else:
         context_prompt = "（目前無可用之本地文檔，請根據您的一般學術知識生成複習講義）"
         
-    prompt = f"""
+    prompt = f\"\"\"
 你是一個極具教學熱忱且專業的 AI 導師。
 現在，請為使用者針對知識主題「{{topic}}」製作一份精緻、具備學術深度的繁體中文「觀念複習導讀講義」。
 
@@ -481,7 +241,7 @@ def generate_study_guide(user_id: int, topic: str) -> Dict[str, Any]:
 4. 📝 **小試身手觀念題**：提供一題簡單的觀念思考題，並附帶簡短說明，引導使用者思考。
 
 請讓排版美觀、層次分明、語氣親切流暢，並完全以繁體中文撰寫。
-"""
+\"\"\"
     try:
         response = llm.invoke([HumanMessage(content=prompt)])
         guide_content = extract_text_content(response.content)
@@ -494,6 +254,12 @@ def generate_study_guide(user_id: int, topic: str) -> Dict[str, Any]:
         print(f"generate_study_guide error: {e}")
         return {
             "topic": topic,
-            "guide_content": f"### 觀念複習講義：{{topic}}\n\n抱歉，生成講義時發生錯誤：{{str(e)}}\n\n建議您閱讀上傳的原始文件以進行複習。",
+            "guide_content": f"### 觀念複習講義：{{topic}}\\n\\n抱歉，生成講義時發生錯誤：{{str(e)}}\\n\\n建議您閱讀上傳的原始文件以進行複習。",
             "sources": sources
         }
+"""
+
+with open('app/tools.py', 'w', encoding='utf-8') as f:
+    f.write(prefix + new_code)
+
+print("Successfully replaced!")
