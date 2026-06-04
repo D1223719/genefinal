@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+pydantic
+sqlalchemy
+python-multipart
+langchain
+langchain-core
+langchain-community
+langchain-google-genai
+langgraph
+pypdf
+pymupdf
+python-dotenv
+streamlit
+requests
+markdown
+pandas
