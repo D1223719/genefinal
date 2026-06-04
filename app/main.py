@@ -16,7 +16,7 @@ from app.database import (
     Document as DBDocument, SessionLocal, get_default_user_id
 )
 from app.vector_store import get_vector_store, persist_vector_store, get_embeddings
-from app.tools import extractor_tool, graph_builder_tool
+from app.tools import extractor_tool, graph_builder_tool, quiz_master_tool, generate_study_guide
 from app.agent import agent_app
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -318,6 +318,38 @@ async def get_graph():
     """獲取完整的知識圖譜（包含節點與邊），供 Streamlit 可視化渲染"""
     graph = get_knowledge_graph()
     return graph
+
+
+@app.get("/api/quiz/generate")
+async def generate_quiz(topic: Optional[str] = None, count: int = 1):
+    """
+    獲取指定主題與數量的測驗題目。
+    """
+    user_id = get_default_user_id()
+    try:
+        quiz_data = quiz_master_tool(user_id, topic=topic, count=count)
+        return {
+            "status": "success",
+            "quiz_data": quiz_data
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成測驗失敗：{str(e)}")
+
+
+@app.get("/api/review/guide")
+async def get_review_guide(topic: str):
+    """
+    獲取指定主題的語意觀念複習導讀講義。
+    """
+    user_id = get_default_user_id()
+    try:
+        guide_data = generate_study_guide(user_id, topic=topic)
+        return {
+            "status": "success",
+            "guide_data": guide_data
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成複習講義失敗：{str(e)}")
 
 
 @app.post("/api/quiz/submit")
