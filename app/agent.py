@@ -44,8 +44,8 @@ QUIZ, RAG, GENERAL
 """
     try:
         response = llm.invoke([HumanMessage(content=prompt)])
-        text_content = extract_text_content(response.content)
-        intent = text_content.strip().upper()
+        content_str = extract_text_content(response.content)
+        intent = content_str.strip().upper()
         # 防呆過濾
         if intent not in ["QUIZ", "RAG", "GENERAL"]:
             if "QUIZ" in intent:

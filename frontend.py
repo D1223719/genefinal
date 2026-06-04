@@ -27,6 +27,11 @@ st.markdown("""
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
 
 <style>
+    /* 隱藏右上角 Streamlit 預設選單與 Deploy 按鈕，保持畫面整潔專業 */
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    .stDeployButton {display: none;}
+    
     /* 全域字體與背景 */
     html, body, [data-testid="stAppViewContainer"] {
         font-family: 'Inter', sans-serif;
@@ -356,7 +361,7 @@ with st.sidebar:
     else:
         st.markdown("<div style='max-height: 300px; overflow-y: auto;'>", unsafe_allow_html=True)
         for s in sessions:
-            col1, col2 = st.columns([5, 1])
+            col1, col2 = st.columns([4, 1], gap="small")
             with col1:
                 btn_style = "secondary" if s["session_id"] != st.session_state.current_session_id else "primary"
                 if st.button(f"{s['preview']}", key=f"sel_{s['session_id']}", type=btn_style, use_container_width=True):
@@ -364,7 +369,7 @@ with st.sidebar:
                     st.session_state.chat_messages = []
                     st.rerun()
             with col2:
-                if st.button("🗑️", key=f"del_{s['session_id']}"):
+                if st.button("🗑️", key=f"del_{s['session_id']}", use_container_width=True):
                     delete_session_api(s["session_id"])
                     if st.session_state.current_session_id == s["session_id"]:
                         st.session_state.current_session_id = str(uuid.uuid4())
@@ -575,10 +580,10 @@ with tab2:
                 st.markdown(f"""
                 <div class="glass-card" style="padding: 16px; margin-bottom: 12px; border-radius: 12px;">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-weight: 700; color: #00f2fe; font-size: 1.05rem;">📄 {{doc["filename"]}}</span>
-                        <span style="background: rgba(255,255,255,0.05); color: #a2a2b5; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px;">{{doc["file_type"].upper()}}</span>
+                        <span style="font-weight: 700; color: #00f2fe; font-size: 1.05rem;">📄 {doc["filename"]}</span>
+                        <span style="background: rgba(255,255,255,0.05); color: #a2a2b5; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px;">{doc["file_type"].upper()}</span>
                     </div>
-                    <p style="font-size: 0.85rem; color: #a2a2b5; margin-top: 8px; margin-bottom: 10px;">{{safe_summary}}</p>
+                    <p style="font-size: 0.85rem; color: #a2a2b5; margin-top: 8px; margin-bottom: 10px;">{safe_summary}</p>
                     {tags_html}
                 </div>
                 """, unsafe_allow_html=True)
