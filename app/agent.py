@@ -4,7 +4,7 @@ from langgraph.graph import StateGraph, END
 from app.config import settings
 from app.database import get_chat_history, get_default_user_id, save_chat_message
 from app.vector_store import hybrid_search
-from app.tools import get_llm, quiz_master_tool
+from app.tools import get_llm, quiz_master_tool, extract_text_content
 
 # ==========================================
 # 1. 定義 AgentState 狀態結構
@@ -44,7 +44,8 @@ QUIZ, RAG, GENERAL
 """
     try:
         response = llm.invoke([HumanMessage(content=prompt)])
-        intent = response.content.strip().upper()
+        content_str = extract_text_content(response.content)
+        intent = content_str.strip().upper()
         # 防呆過濾
         if intent not in ["QUIZ", "RAG", "GENERAL"]:
             if "QUIZ" in intent:
@@ -126,7 +127,7 @@ def rag_agent_node(state: AgentState) -> Dict[str, Any]:
     
     try:
         response = llm.invoke(messages)
-        ai_reply = response.content
+        ai_reply = extract_text_content(response.content)
     except Exception as e:
         ai_reply = f"抱歉，在處理您的問答時發生 AI 模型調用錯誤：{str(e)}"
         

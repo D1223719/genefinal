@@ -72,7 +72,7 @@ def extractor_tool(text: str) -> Dict[str, Any]:
 
     try:
         response = llm.invoke([HumanMessage(content=prompt)])
-        cleaned_content = clean_json_string(response.content)
+        cleaned_content = clean_json_string(extract_text_content(response.content))
         result = json.loads(cleaned_content)
         
         # 確保格式正確
@@ -138,7 +138,7 @@ def graph_builder_tool(new_tags: List[str], summary: str) -> Dict[str, Any]:
 
     try:
         response = llm.invoke([HumanMessage(content=prompt)])
-        cleaned_content = clean_json_string(response.content)
+        cleaned_content = clean_json_string(extract_text_content(response.content))
         result = json.loads(cleaned_content)
         
         relations = result.get("relations", [])
@@ -220,7 +220,7 @@ def quiz_master_tool(user_id: int) -> Dict[str, Any]:
 
     try:
         response = llm.invoke([HumanMessage(content=prompt)])
-        cleaned_content = clean_json_string(response.content)
+        cleaned_content = clean_json_string(extract_text_content(response.content))
         result = json.loads(cleaned_content)
         
         # 驗證輸出完整性
