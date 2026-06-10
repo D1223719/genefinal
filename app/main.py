@@ -13,10 +13,11 @@ from app.database import (
     init_db, get_db, save_chat_message, get_chat_history, 
     get_weaknesses, update_weakness, get_knowledge_graph, 
     get_chat_sessions, delete_chat_session,
+    save_quiz_history, get_quiz_history, delete_quiz_history, delete_document,
     Document as DBDocument, SessionLocal, get_default_user_id
 )
-from app.vector_store import get_vector_store, persist_vector_store, get_embeddings
-from app.tools import extractor_tool, graph_builder_tool, quiz_master_tool, generate_study_guide
+from app.vector_store import get_vector_store, persist_vector_store, get_embeddings, delete_documents_by_id
+from app.tools import extractor_tool, graph_builder_tool
 from app.agent import agent_app
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -52,6 +53,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 class ChatRequest(BaseModel):
     message: str
     session_id: str = "default"
+    force_intent: str = None
 
 class QuizSubmitRequest(BaseModel):
     topic: str
@@ -61,95 +63,127 @@ class QuizSubmitRequest(BaseModel):
 # 背景非同步文件處理管線 (Document Processing Pipeline)
 # ==========================================
 
-def process_uploaded_file(file_path: Path, filename: str, file_type: str, doc_id: int):
-    """
-    背景非同步任務：
-    1. 擷取文本內容。
-    2. 使用 RecursiveCharacterTextSplitter 進行切塊 (Chunking)。
-    3. 呼叫 ExtractorTool 獲取摘要與 Tags。
-    4. 呼叫 GraphBuilderTool 分析並寫入知識關聯。
-    5. 使用 Embedding 模型將 Chunks 寫入 persistent Vector DB。
-    6. 更新 MySQL/SQLite 裡的 Document 記錄 (寫入摘要與 Tags)。
-    """
-    db = SessionLocal()
-    try:
-        print(f"Starting pipeline for document: {filename}...")
-        
-        # 1. 擷取文本與切塊
-        lc_docs: List[LCDocument] = []
-        full_text = ""
-        
-        if file_type == "pdf":
-            try:
-                from langchain_community.document_loaders import PyMuPDFLoader
-                loader = PyMuPDFLoader(str(file_path))
-            except ImportError:
-                loader = PyPDFLoader(str(file_path))
-                
-            pages = loader.load()
-            
-            # 用於摘要萃取的完整文本 (限制前 6000 字避免 token 爆量)
-            full_text = "\n".join([page.page_content for page in pages[:10]])
-            
-            # 使用 RecursiveCharacterTextSplitter 進行切塊
-            splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)
-            lc_docs = splitter.split_documents(pages)
-        else:
-            # Markdown 或純文字
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            full_text = content
-            
-            # 手動包裝為 LCDocument
-            raw_doc = LCDocument(page_content=content, metadata={"source": filename, "page_number": 1})
-            splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)
-            lc_docs = splitter.split_documents([raw_doc])
-            
-        print(f"Document {filename} split into {len(lc_docs)} chunks.")
-        
-        # 檢查是否有萃取出實質文字
-        if not lc_docs or not any(doc.page_content.strip() for doc in lc_docs):
-            raise ValueError("此檔案內缺乏可萃取的文字內容 (可能是純圖片掃描檔)。請上傳具備文字層的 PDF 或 Markdown 檔案。")
+import threading
+import time
 
-        # 2. 結構萃取 (Extractor)
-        extraction = extractor_tool(full_text)
-        summary = extraction.get("summary", "無摘要")
-        tags = extraction.get("tags", [])
-        print(f"Extracted summary & tags: {tags}")
+# 限制背景處理並行數為 1，避免超過免費 API 的 Rate Limit (15 RPM / 100 RPM)
+pipeline_semaphore = threading.Semaphore(1)
+
+def process_uploaded_file(file_path: Path, filename: str, file_type: str, doc_id: int):
+    # 使用獨立 Thread 來執行，避免佔用 FastAPI (anyio) 的 ThreadPool，導致其他同步 Request 卡死
+    threading.Thread(
+        target=_do_process_uploaded_file,
+        args=(file_path, filename, file_type, doc_id),
+        daemon=True
+    ).start()
+
+def _do_process_uploaded_file(file_path: Path, filename: str, file_type: str, doc_id: int):
+    # 確保在執行背景處理時，最多只有 1 個任務同時進行 API 呼叫
+    with pipeline_semaphore:
+        """
+        背景非同步任務：
+        1. 擷取文本內容。
+        2. 使用 RecursiveCharacterTextSplitter 進行切塊 (Chunking)。
+        3. 呼叫 ExtractorTool 獲取摘要與 Tags。
+        4. 呼叫 GraphBuilderTool 分析並寫入知識關聯。
+        5. 使用 Embedding 模型將 Chunks 寫入 persistent Vector DB。
+        6. 更新 MySQL/SQLite 裡的 Document 記錄 (寫入摘要與 Tags)。
+        """
+        db = SessionLocal()
+        try:
+            print(f"Starting pipeline for document: {filename}...")
         
-        # 3. 關係鏈結 (Graph Builder)
-        graph_builder_tool(tags, summary)
+            # 1. 擷取文本與切塊
+            lc_docs: List[LCDocument] = []
+            full_text = ""
         
-        # 4. 寫入向量資料庫 (Vector DB)
-        # 為每個 chunk 注入正確的 metadata 供 RAG 與來源追溯
-        for doc in lc_docs:
-            doc.metadata["document_id"] = doc_id
-            doc.metadata["filename"] = filename
-            doc.metadata["page_number"] = doc.metadata.get("page", 1)  # PyPDFLoader 會自動標記 "page"
-            doc.metadata["tags"] = tags
+            if file_type == "pdf":
+                try:
+                    from langchain_community.document_loaders import PyMuPDFLoader
+                    loader = PyMuPDFLoader(str(file_path))
+                except ImportError:
+                    loader = PyPDFLoader(str(file_path))
+                
+                pages = loader.load()
             
-        vector_store = get_vector_store()
-        vector_store.add_documents(lc_docs)
-        persist_vector_store(vector_store)
-        print("Vector database persistence completed.")
-        
-        # 5. 更新 SQLite 資料庫的 Document 紀錄
-        db_doc = db.query(DBDocument).filter(DBDocument.id == doc_id).first()
-        if db_doc:
-            db_doc.summary = summary
-            db_doc.tags = tags
-            db.commit()
-            print(f"Successfully updated document record in SQL database.")
+                # 用於摘要萃取的完整文本 (限制前 6000 字避免 token 爆量)
+                full_text = "\n".join([page.page_content for page in pages[:10]])
             
-    except Exception as e:
-        print(f"Error processing file {filename} in pipeline: {e}")
-        # 錯誤時更新資料庫狀態
-        db_doc = db.query(DBDocument).filter(DBDocument.id == doc_id).first()
-        if db_doc:
-            db_doc.summary = f"處理檔案時發生錯誤：{str(e)}"
-            db.commit()
-    finally:
-        db.close()
+                # 使用 RecursiveCharacterTextSplitter 進行切塊
+                splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)
+                lc_docs = splitter.split_documents(pages)
+            else:
+                # Markdown 或純文字
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                full_text = content
+            
+                # 手動包裝為 LCDocument
+                raw_doc = LCDocument(page_content=content, metadata={"source": filename, "page_number": 1})
+                splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)
+                lc_docs = splitter.split_documents([raw_doc])
+            
+            print(f"Document {filename} split into {len(lc_docs)} chunks.")
+        
+            # 檢查是否有萃取出實質文字
+            if not lc_docs or not any(doc.page_content.strip() for doc in lc_docs):
+                raise ValueError("此檔案內缺乏可萃取的文字內容 (可能是純圖片掃描檔)。請上傳具備文字層的 PDF 或 Markdown 檔案。")
+
+            # 2. 結構萃取 (Extractor)
+            extraction = extractor_tool(full_text)
+            summary = extraction.get("summary", "無摘要")
+            tags = extraction.get("tags", [])
+            print(f"Extracted summary & tags: {tags}")
+        
+            # 3. 關係鏈結 (Graph Builder)
+            graph_builder_tool(tags, summary)
+        
+            # 4. 寫入向量資料庫 (Vector DB)
+            # 為每個 chunk 注入正確的 metadata 供 RAG 與來源追溯
+            for doc in lc_docs:
+                doc.metadata["document_id"] = doc_id
+                doc.metadata["filename"] = filename
+                doc.metadata["page_number"] = doc.metadata.get("page", 1)  # PyPDFLoader 會自動標記 "page"
+                doc.metadata["tags"] = tags
+            
+                vector_store = get_vector_store()
+            
+            # 加入 429 Quota 限流自動重試機制
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    vector_store.add_documents(lc_docs)
+                    persist_vector_store(vector_store)
+                    break
+                except Exception as e:
+                    error_msg = str(e)
+                    if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                        if attempt < max_retries - 1:
+                            print(f"API Rate limit hit for {filename}, sleeping for 50 seconds... (Attempt {attempt+1}/{max_retries})")
+                            time.sleep(50)
+                        else:
+                            raise Exception(f"已達 API 免費配額上限，請稍後再試。({error_msg})")
+                    else:
+                        raise e
+            print("Vector database persistence completed.")
+        
+            # 5. 更新 SQLite 資料庫的 Document 紀錄
+            db_doc = db.query(DBDocument).filter(DBDocument.id == doc_id).first()
+            if db_doc:
+                db_doc.summary = summary
+                db_doc.tags = tags
+                db.commit()
+                print(f"Successfully updated document record in SQL database.")
+            
+        except Exception as e:
+            print(f"Error processing file {filename} in pipeline: {e}")
+            # 錯誤時更新資料庫狀態
+            db_doc = db.query(DBDocument).filter(DBDocument.id == doc_id).first()
+            if db_doc:
+                db_doc.summary = f"處理檔案時發生錯誤：{str(e)}"
+                db.commit()
+        finally:
+            db.close()
 
 # ==========================================
 # Web API 路由端點實作
@@ -171,14 +205,6 @@ async def upload_file(
     
     if file_ext not in ["pdf", "md", "txt"]:
         raise HTTPException(status_code=400, detail="僅支援 PDF, MD 或 TXT 格式檔案。")
-        
-    # 檢查資料庫中是否已存在同名檔案
-    existing_doc = db.query(DBDocument).filter(DBDocument.filename == filename).first()
-    if existing_doc:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"檔案「{filename}」已存在於知識庫中。若您想要重新上傳此檔案以重新解析，請先在左側邊欄點擊「🔄 一鍵重置系統資料」，或是將檔案重新命名後再次上傳。"
-        )
         
     # 儲存實體檔案
     file_path = UPLOAD_DIR / filename
@@ -215,7 +241,7 @@ async def upload_file(
     
     return {
         "status": "success",
-        "message": f"檔案 {filename} 已成功上傳，正在背景進行解析與關聯圖譜分析。",
+        "message": f"檔案 {filename} 已成功上傳，正在背景加速處理中...",
         "document_id": db_doc.id
     }
 
@@ -250,7 +276,7 @@ async def chat_endpoint(request: ChatRequest):
     # 2. 調用 LangGraph 工作流
     initial_state = {
         "messages": [HumanMessage(content=user_msg)],
-        "intent": "",
+        "intent": request.force_intent if request.force_intent else "",
         "context": "",
         "quiz_data": {}
     }
@@ -268,6 +294,15 @@ async def chat_endpoint(request: ChatRequest):
             
         intent = final_state.get("intent", "RAG")
         quiz_data = final_state.get("quiz_data", {})
+        
+        if quiz_data:
+            save_quiz_history(
+                topic=quiz_data.get("topic", "未分類"),
+                question=quiz_data.get("question", ""),
+                options=quiz_data.get("options", {}),
+                answer=quiz_data.get("answer", ""),
+                explanation=quiz_data.get("explanation", "")
+            )
         
         # 3. 儲存 AI 回覆紀錄
         save_chat_message("assistant", ai_reply, session_id=session_id)
@@ -320,38 +355,6 @@ async def get_graph():
     return graph
 
 
-@app.get("/api/quiz/generate")
-async def generate_quiz(topic: Optional[str] = None, count: int = 1):
-    """
-    獲取指定主題與數量的測驗題目。
-    """
-    user_id = get_default_user_id()
-    try:
-        quiz_data = quiz_master_tool(user_id, topic=topic, count=count)
-        return {
-            "status": "success",
-            "quiz_data": quiz_data
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成測驗失敗：{str(e)}")
-
-
-@app.get("/api/review/guide")
-async def get_review_guide(topic: str):
-    """
-    獲取指定主題的語意觀念複習導讀講義。
-    """
-    user_id = get_default_user_id()
-    try:
-        guide_data = generate_study_guide(user_id, topic=topic)
-        return {
-            "status": "success",
-            "guide_data": guide_data
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成複習講義失敗：{str(e)}")
-
-
 @app.post("/api/quiz/submit")
 async def submit_quiz(request: QuizSubmitRequest):
     """
@@ -371,6 +374,37 @@ async def list_weaknesses():
     """列出目前的弱點主題與錯誤分數"""
     weaknesses = get_weaknesses()
     return {"weaknesses": weaknesses}
+
+
+
+@app.delete("/api/documents/{document_id}")
+async def delete_document_endpoint(document_id: int):
+    """刪除指定的知識庫文件及關聯向量資料"""
+    try:
+        delete_document(document_id)
+        # 非同步刪除會比較好，但為了確保一致性這裡同步處理
+        delete_documents_by_id(document_id)
+        return {"status": "success", "message": "文件與對應的向量檢索資料已刪除"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/quiz/history")
+async def list_quiz_history():
+    """獲取過去的測驗歷史紀錄"""
+    try:
+        history = get_quiz_history()
+        return {"quiz_history": history}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/quiz/history/{quiz_id}")
+async def delete_quiz_history_endpoint(quiz_id: int):
+    """刪除指定的測驗歷史紀錄"""
+    try:
+        delete_quiz_history(quiz_id)
+        return {"status": "success", "message": "測驗歷史已刪除"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/reset")

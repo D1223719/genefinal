@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 import markdown
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 # 設定網頁標題與外觀
 st.set_page_config(
@@ -29,7 +29,7 @@ st.markdown("""
 <style>
     /* 隱藏右上角 Streamlit 預設選單與 Deploy 按鈕，保持畫面整潔專業 */
     #MainMenu {visibility: hidden;}
-    header {visibility: hidden;}
+    header {background-color: transparent !important;}
     .stDeployButton {display: none;}
     
     /* 全域字體與背景 */
@@ -196,10 +196,10 @@ def upload_file_to_api(uploaded_file) -> Dict[str, Any]:
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-def send_chat_message(message: str, session_id: str = "default") -> Dict[str, Any]:
+def send_chat_message(message: str, session_id: str = "default", force_intent: str = None) -> Dict[str, Any]:
     """發送聊天訊息"""
     try:
-        res = requests.post(f"{API_URL}/chat", json={"message": message, "session_id": session_id})
+        res = requests.post(f"{API_URL}/chat", json={"message": message, "session_id": session_id, "force_intent": force_intent})
         return res.json()
     except Exception as e:
         return {"status": "error", "reply": f"連線至後端失敗：{str(e)}", "intent": "RAG"}
@@ -228,25 +228,6 @@ def submit_quiz_result(topic: str, correct: bool) -> Dict[str, Any]:
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-def get_quiz_questions(topic: Optional[str] = None, count: int = 1) -> Dict[str, Any]:
-    """從後端取得指定主題與數量的測驗題庫"""
-    try:
-        params = {"count": count}
-        if topic:
-            params["topic"] = topic
-        res = requests.get(f"{API_URL}/quiz/generate", params=params)
-        return res.json()
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-def get_review_guide_api(topic: str) -> Dict[str, Any]:
-    """從後端取得指定主題的觀念複習導讀講義"""
-    try:
-        res = requests.get(f"{API_URL}/review/guide", params={"topic": topic})
-        return res.json()
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
 def get_documents_list() -> List[Dict[str, Any]]:
     """獲取已上傳文件清單"""
     try:
@@ -254,6 +235,28 @@ def get_documents_list() -> List[Dict[str, Any]]:
         return res.json()
     except Exception:
         return []
+
+
+def delete_document_api(document_id: int) -> bool:
+    try:
+        res = requests.delete(f"{API_URL}/documents/{document_id}")
+        return res.status_code == 200
+    except Exception:
+        return False
+
+def get_quiz_history_api() -> List[Dict[str, Any]]:
+    try:
+        res = requests.get(f"{API_URL}/quiz/history")
+        return res.json().get("quiz_history", [])
+    except Exception:
+        return []
+
+def delete_quiz_history_api(quiz_id: int) -> bool:
+    try:
+        res = requests.delete(f"{API_URL}/quiz/history/{quiz_id}")
+        return res.status_code == 200
+    except Exception:
+        return False
 
 def get_weaknesses_list() -> List[Dict[str, Any]]:
     """獲取弱點清單"""
@@ -297,96 +300,14 @@ if "trigger_api_key_warn" not in st.session_state:
 if "current_session_id" not in st.session_state:
     st.session_state.current_session_id = str(uuid.uuid4())
 
-# 新增的測驗與複習狀態
-if "quiz_questions" not in st.session_state:
-    st.session_state.quiz_questions = []
-if "quiz_index" not in st.session_state:
-    st.session_state.quiz_index = 0
-if "quiz_answers" not in st.session_state:
-    st.session_state.quiz_answers = []
-if "quiz_in_progress" not in st.session_state:
-    st.session_state.quiz_in_progress = False
-if "current_guide" not in st.session_state:
-    st.session_state.current_guide = None
-if "quiz_mode" not in st.session_state:
-    st.session_state.quiz_mode = "single"  # "single" or "multi"
-
 # ==========================================
-# 4. 側邊欄 (Sidebar) 設計
-# ==========================================
-with st.sidebar:
-    st.markdown('<h1 class="cyan-gradient-text" style="font-size: 2.2rem; margin-bottom: 5px;">🧠 AI PKM Agent</h1>', unsafe_allow_html=True)
-    st.markdown('<p style="color: #8c8c9e; font-size: 0.9rem; margin-top: 0px;">個人知識圖譜與智能複習助教</p>', unsafe_allow_html=True)
-    st.markdown("---")
-    
-    # 檢查後端狀態
-    backend_ok = get_backend_status()
-    if backend_ok:
-        st.success("🟢 後端 API 服務已連接")
-    else:
-        st.error("🔴 未能連接至後端 API (Port 8000)")
-        st.info("請於終端機執行以啟動後端：\n\n`uvicorn app.main:app --reload`")
-        
-    st.markdown("---")
-    st.markdown("### ⚙️ 系統設定與展示")
-    
-    user_name = st.text_input("使用者名稱", value="jeff", disabled=True, help="此為期末專題預設展示帳戶")
-    
-    st.markdown("---")
-    st.markdown("### ⚠️ 危機救援")
-    st.warning("若想完全清空資料重置展示，請點擊下方：")
-    if st.button("🔄 一鍵重置系統資料", type="secondary", use_container_width=True):
-        with st.spinner("重設中..."):
-            res = reset_entire_system()
-            if res.get("status") == "success":
-                st.session_state.chat_messages = []
-                st.session_state.current_quiz = None
-                st.session_state.quiz_answered = False
-                st.toast("🔴 系統已重置為初始狀態！", icon="🗑️")
-                st.rerun()
-            else:
-                st.error("重置失敗！")
-                
-    st.markdown("---")
-    st.markdown("### 💬 對話歷史紀錄")
-    
-    if st.button("📝 新增對話", type="primary", use_container_width=True):
-        st.session_state.current_session_id = str(uuid.uuid4())
-        st.session_state.chat_messages = []
-        st.rerun()
-
-    sessions = get_chat_sessions_api()
-    if not sessions:
-        st.info("尚無歷史紀錄")
-    else:
-        st.markdown("<div style='max-height: 300px; overflow-y: auto;'>", unsafe_allow_html=True)
-        for s in sessions:
-            col1, col2 = st.columns([4, 1], gap="small")
-            with col1:
-                btn_style = "secondary" if s["session_id"] != st.session_state.current_session_id else "primary"
-                if st.button(f"{s['preview']}", key=f"sel_{s['session_id']}", type=btn_style, use_container_width=True):
-                    st.session_state.current_session_id = s["session_id"]
-                    st.session_state.chat_messages = []
-                    st.rerun()
-            with col2:
-                if st.button("🗑️", key=f"del_{s['session_id']}", use_container_width=True):
-                    delete_session_api(s["session_id"])
-                    if st.session_state.current_session_id == s["session_id"]:
-                        st.session_state.current_session_id = str(uuid.uuid4())
-                        st.session_state.chat_messages = []
-                    st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
-                
-    st.markdown("---")
-    st.markdown('<p style="color: #555566; font-size: 0.8rem; text-align: center;">2026 AI 個人知識管理 Agent 期末專題 © Jeff</p>', unsafe_allow_html=True)
-
-# ==========================================
-# 5. 主頁面 (Main Page) 設計
+# 4. 主頁面 (Main Page) 設計與導航
 # ==========================================
 st.markdown('<h1 class="gradient-text" style="font-size: 2.8rem; margin-bottom: 10px;">AI 個人知識管理 Agent 系統</h1>', unsafe_allow_html=True)
 st.markdown('<p style="color: #a2a2b5; font-size: 1.1rem; margin-top: 0px; margin-bottom: 25px;">將零散文檔自動化生成結構化知識圖譜，並結合長期記憶弱點，提供個人客製化的 AI 觀念複習機制。</p>', unsafe_allow_html=True)
 
 # 後端未啟動時的防呆遮罩
+backend_ok = get_backend_status()
 if not backend_ok:
     st.markdown("""
     <div class="glass-card" style="border-color: #ff007f; background: rgba(30, 10, 20, 0.4);">
@@ -403,13 +324,136 @@ if not backend_ok:
     """, unsafe_allow_html=True)
     st.stop()
 
-# 建立分頁標籤
-tab1, tab2, tab3 = st.tabs(["💬 智能對話助教 (RAG Chat)", "📚 知識庫與圖譜 (Knowledge Graph)", "🎯 觀念測驗與複習 (Quiz Master)"])
+tab_options = ["💬 智能對話助教 (RAG Chat)", "📚 知識庫與圖譜 (Knowledge Graph)", "🎯 觀念測驗與複習 (Quiz Master)"]
+selected_tab = st.segmented_control("導航", tab_options, default=tab_options[0], label_visibility="collapsed")
 
+# ==========================================
+# 5. 側邊欄 (Sidebar) 設計
+# ==========================================
+with st.sidebar:
+
+    st.markdown("---")
+    
+    if not selected_tab or selected_tab == "💬 智能對話助教 (RAG Chat)":
+        st.markdown("### 💬 對話歷史紀錄")
+        
+        if st.button("📝 新增對話", type="primary", use_container_width=True):
+            st.session_state.current_session_id = str(import_uuid.uuid4()) if "import_uuid" in globals() else str(__import__('uuid').uuid4())
+            st.session_state.chat_messages = []
+            st.rerun()
+
+        sessions = get_chat_sessions_api()
+        if not sessions:
+            st.info("尚無歷史紀錄")
+        else:
+            st.markdown("<div style='max-height: 300px; overflow-y: auto;'>", unsafe_allow_html=True)
+            for s in sessions:
+                col1, col2 = st.columns([4, 1], gap="small")
+                with col1:
+                    btn_style = "secondary" if s["session_id"] != st.session_state.current_session_id else "primary"
+                    if st.button(f"{s['preview']}", key=f"sel_{s['session_id']}", type=btn_style, use_container_width=True):
+                        st.session_state.current_session_id = s["session_id"]
+                        st.session_state.chat_messages = []
+                        st.rerun()
+                with col2:
+                    if st.button("🗑️", key=f"del_{s['session_id']}", use_container_width=True):
+                        delete_session_api(s["session_id"])
+                        if st.session_state.current_session_id == s["session_id"]:
+                            st.session_state.current_session_id = str(__import__('uuid').uuid4())
+                            st.session_state.chat_messages = []
+                        st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+            
+    elif selected_tab == "📚 知識庫與圖譜 (Knowledge Graph)":
+        st.markdown("### 📚 知識庫操作")
+        if st.button("➕ 新增知識庫", type="primary", use_container_width=True):
+            st.toast("請在右側主畫面拖曳檔案來新增知識庫！", icon="📤")
+            
+        st.markdown("### 📄 歷史文件清單")
+        
+        docs = get_documents_list()
+        if not docs:
+            st.info("尚無上傳的知識庫文件")
+        else:
+            batch_mode = st.toggle("✅ 批次選取刪除")
+            st.markdown("<div style='max-height: 300px; overflow-y: auto;'>", unsafe_allow_html=True)
+            
+            selected_docs = []
+            for d in docs:
+                preview = d["filename"][:15] + "..." if len(d["filename"]) > 15 else d["filename"]
+                
+                if batch_mode:
+                    col_chk, col_doc = st.columns([1, 4])
+                    with col_chk:
+                        is_selected = st.checkbox(" ", key=f"chk_doc_{d['id']}")
+                        if is_selected:
+                            selected_docs.append(d['id'])
+                    with col_doc:
+                        st.button(f"📄 {preview}", key=f"doc_{d['id']}", disabled=True, use_container_width=True)
+                else:
+                    col1, col2 = st.columns([4, 1], gap="small")
+                    with col1:
+                        st.button(f"📄 {preview}", key=f"doc_{d['id']}", disabled=True, use_container_width=True)
+                    with col2:
+                        if st.button("🗑️", key=f"del_doc_{d['id']}", use_container_width=True):
+                            delete_document_api(d['id'])
+                            st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+            
+            if batch_mode and selected_docs:
+                if st.button(f"🗑️ 刪除已選取的 {len(selected_docs)} 份文件", type="primary", use_container_width=True):
+                    with st.spinner("正在批次刪除中..."):
+                        import time
+                        for doc_id in selected_docs:
+                            delete_document_api(doc_id)
+                    st.success("批次刪除成功！")
+                    time.sleep(1)
+                    st.rerun()
+            
+    elif selected_tab == "🎯 觀念測驗與複習 (Quiz Master)":
+        st.markdown("### 🎯 測驗與複習")
+        if st.button("🎲 新增觀念測驗和複習", type="primary", use_container_width=True):
+            st.toast("請點擊右側「呼叫 Quiz Master」來生成新測驗！", icon="🎲")
+            
+        st.markdown("### 📜 歷史測驗紀錄")
+        
+        quizzes = get_quiz_history_api()
+        if not quizzes:
+            st.info("尚無歷史測驗紀錄")
+        else:
+            st.markdown("<div style='max-height: 300px; overflow-y: auto;'>", unsafe_allow_html=True)
+            for q in quizzes:
+                col1, col2 = st.columns([4, 1], gap="small")
+                with col1:
+                    preview = f"[{q['topic']}] {q['question'][:10]}..."
+                    is_active = (st.session_state.current_quiz and st.session_state.current_quiz.get("question") == q["question"])
+                    btn_style = "primary" if is_active else "secondary"
+                    if st.button(preview, key=f"quiz_{q['id']}", type=btn_style, use_container_width=True):
+                        st.session_state.current_quiz = {
+                            "topic": q["topic"],
+                            "question": q["question"],
+                            "options": q["options"],
+                            "answer": q["answer"],
+                            "explanation": q["explanation"]
+                        }
+                        st.session_state.quiz_answered = False
+                        st.session_state.quiz_selected_option = None
+                        st.session_state.quiz_result_correct = None
+                        st.rerun()
+                with col2:
+                    if st.button("🗑️", key=f"del_quiz_{q['id']}", use_container_width=True):
+                        delete_quiz_history_api(q['id'])
+                        if st.session_state.current_quiz and st.session_state.current_quiz.get("question") == q["question"]:
+                            st.session_state.current_quiz = None
+                        st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown('<p style="color: #555566; font-size: 0.8rem; text-align: center;">2026 AI 個人知識管理 Agent 期末專題 © Jeff</p>', unsafe_allow_html=True)
 # ==========================================
 # Tab 1: 智能對話助教 (RAG Chat)
 # ==========================================
-with tab1:
+if not selected_tab or selected_tab == "💬 智能對話助教 (RAG Chat)":
     st.markdown('<h3 style="margin-top: 10px; margin-bottom: 20px;">💬 AI 課業問答助教</h3>', unsafe_allow_html=True)
     
     # 點點對話提示卡片
@@ -518,53 +562,54 @@ with tab1:
 # ==========================================
 # Tab 2: 知識庫與圖譜 (Knowledge Graph)
 # ==========================================
-with tab2:
+elif selected_tab == "📚 知識庫與圖譜 (Knowledge Graph)":
     col1, col2 = st.columns([1, 1])
     
     with col1:
         st.markdown('<h3 style="margin-top: 10px;">📤 上傳與管理知識文件</h3>', unsafe_allow_html=True)
         
-        # 拖拉上傳
-        uploaded_files = st.file_uploader("選擇 PDF 或 Markdown 檔案匯入知識庫 (限 PDF/MD/TXT，可選多個檔案)", type=["pdf", "md", "txt"], accept_multiple_files=True)
+        # 拖拉上傳 (支援多檔與資料夾拖曳)
+        uploaded_files = st.file_uploader(
+            "選擇或拖曳 PDF/MD/TXT 檔案匯入 (支援選取多檔或直接拖曳資料夾)", 
+            type=["pdf", "md", "txt"], 
+            accept_multiple_files=True
+        )
         
         if uploaded_files:
             if st.button("🚀 開始匯入知識管道", type="primary", use_container_width=True):
-                success_count = 0
-                error_messages = []
-                
-                with st.spinner(f"正在上傳並觸發背景處理管線 (共 {len(uploaded_files)} 個檔案)..."):
-                    for uploaded_file in uploaded_files:
-                        res = upload_file_to_api(uploaded_file)
-                        if res.get("status") == "success":
-                            success_count += 1
-                        else:
-                            # 讀取 detail 或 message
-                            err_msg = res.get("message") or res.get("detail") or "未知錯誤"
-                            error_messages.append(f"「{uploaded_file.name}」上傳失敗：{err_msg}")
-                            
-                if success_count > 0:
-                    st.success(f"🎉 成功啟動 {success_count} 個檔案的背景解析與圖譜分析！")
-                    if not error_messages:
-                        st.balloons()
-                        time.sleep(2)
-                        st.rerun()
+                with st.spinner(f"正在平行上傳 {len(uploaded_files)} 個檔案..."):
+                    import concurrent.futures
+                    success_count = 0
+                    err_msgs = []
+                    
+                    def process_uf(uf):
+                        return uf, upload_file_to_api(uf)
                         
-                if error_messages:
-                    for err in error_messages:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                        futures = [executor.submit(process_uf, uf) for uf in uploaded_files]
+                        for future in concurrent.futures.as_completed(futures):
+                            uf, res = future.result()
+                            if res.get("status") == "success":
+                                success_count += 1
+                            else:
+                                err_msgs.append(f"{uf.name}: {res.get('message')}")
+                    
+                if success_count > 0:
+                    st.success(f"成功將 {success_count} 份檔案送入背景加速處理！")
+                    if err_msgs:
+                        with st.expander("部分檔案上傳失敗 / 略過"):
+                            for err in err_msgs:
+                                st.warning(err)
+                    st.balloons()
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.error("全部檔案上傳失敗！")
+                    for err in err_msgs:
                         st.error(err)
-                    if success_count > 0:
-                        time.sleep(2)
-                        st.rerun()
                     
         st.markdown("---")
-        
-        # 建立標題與重新整理按鈕的並排佈局
-        col_title, col_btn = st.columns([3, 1])
-        with col_title:
-            st.markdown("#### 📂 知識庫已匯入文檔清單")
-        with col_btn:
-            if st.button("🔄 重新整理列表", key="refresh_docs_list", use_container_width=True):
-                st.rerun()
+        st.markdown("#### 📂 知識庫已匯入文檔清單")
         
         docs_list = get_documents_list()
         if not docs_list:
@@ -746,12 +791,18 @@ with tab2:
                 df = pd.DataFrame(graph_data["edges"])
                 if not df.empty:
                     df.columns = ["來源節點 (Source)", "目標節點 (Target)", "關係類型 (Relation)", "相關強度權重 (Weight)"]
-                    st.dataframe(df, use_container_width=True)
+                    st.dataframe(df.style.background_gradient(cmap="Purples", subset=["相關強度權重 (Weight)"]), use_container_width=True)
+
+        # 檢查是否有文件正在處理中，如果是，2秒後自動重新整理
+        if any("解析中" in d.get("summary", "") for d in docs_list):
+            st.info("🔄 系統正在背景加速處理您的文件與建構圖譜，網頁將自動更新以顯示最新進度...")
+            time.sleep(2)
+            st.rerun()
 
 # ==========================================
 # Tab 3: 觀念測驗與複習 (Quiz Master)
 # ==========================================
-with tab3:
+elif selected_tab == "🎯 觀念測驗與複習 (Quiz Master)":
     col1, col2 = st.columns([2, 3])
     
     with col1:
@@ -759,6 +810,7 @@ with tab3:
         st.markdown('<p style="color: #8c8c9e; font-size: 0.85rem; margin-top: 0px;">基於測驗錯誤歷史，追蹤需要加強的概念。測驗答錯，主題分數上升；答對，主題分數降低。</p>', unsafe_allow_html=True)
         
         weaknesses = get_weaknesses_list()
+        all_quizzes = get_quiz_history_api()
         
         if not weaknesses:
             st.info("🌱 您的弱點記憶庫目前乾淨無比！請開始問答或上傳檔案，系統將在此分析您的知識弱點。")
@@ -768,284 +820,78 @@ with tab3:
                 # 換算百分比
                 percent = int((w["error_count"] / max(1, max_err)) * 100)
                 
-                # 判定弱點等級
-                mastery = w.get("mastery_rate", 0.0)
-                err_cnt = w["error_count"]
-                
-                if err_cnt >= 5 or mastery < 40:
-                    badge_label = f"🔴 亟需加強 (熟練度: {mastery}%)"
-                    bar_color = "linear-gradient(90deg, #ff0844 0%, #ffb199 100%)"
-                elif 2 <= err_cnt < 5 or 40 <= mastery < 70:
-                    badge_label = f"🟡 尚待溫習 (熟練度: {mastery}%)"
-                    bar_color = "linear-gradient(90deg, #f12711 0%, #f5af19 100%)"
-                else:
-                    badge_label = f"🟢 熟練掌握 (熟練度: {mastery}%)"
-                    bar_color = "linear-gradient(90deg, #11998e 0%, #38ef7d 100%)"
-                
                 st.markdown(f"""
-                <div style="margin-bottom: 8px;">
+                <div style="margin-bottom: 15px;">
                     <div style="display: flex; justify-content: space-between; font-size: 0.95rem; margin-bottom: 5px;">
-                        <span style="font-weight: 700; color: #ffffff;">🔥 {w["topic"]}</span>
-                        <span style="font-weight: 600; font-size: 0.85rem;">{badge_label}</span>
+                        <span style="font-weight: 700; color: #ff007f;">🔥 {w["topic"]}</span>
+                        <span style="color: #ff007f; font-weight: 600;">錯誤指數: {w["error_count"]} 次</span>
                     </div>
-                    <div class="weakness-bar-bg" style="height: 8px;">
-                        <div class="weakness-bar-fill" style="width: {max(5, percent)}%; background: {bar_color}; height: 100%;"></div>
+                    <div class="weakness-bar-bg">
+                        <div class="weakness-bar-fill" style="width: {max(5, percent)}%;"></div>
                     </div>
-                    <div style="color: #8c8c9e; font-size: 0.7rem; display: flex; justify-content: space-between; margin-top: 4px; margin-bottom: 8px;">
-                        <span>答對 {w['correct_count']} / 答錯 {w['error_count']} / 共 {w['total_count']} 次</span>
-                        <span>上次: {w["last_tested_at"][:16].replace("T", " ")}</span>
-                    </div>
+                    <div style="color: #666677; font-size: 0.75rem; text-align: right; margin-top: 4px;">上次測驗: {w["last_tested_at"][:16].replace("T", " ")}</div>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # 新增並排的功能按鈕
-                btn_col1, btn_col2 = st.columns(2)
-                with btn_col1:
-                    if st.button(f"📖 觀念複習", key=f"guide_btn_{w['topic']}", use_container_width=True, type="secondary"):
-                        with st.spinner("AI 導師正在為您編寫複習講義..."):
-                            res = get_review_guide_api(w["topic"])
-                            if res.get("status") == "success":
-                                st.session_state.current_guide = res["guide_data"]
-                                st.session_state.quiz_in_progress = False
-                                st.session_state.quiz_questions = []
-                                st.session_state.quiz_answers = []
-                                st.session_state.current_quiz = None
-                                st.rerun()
-                            else:
-                                st.error("獲取複習講義失敗！")
-                with btn_col2:
-                    if st.button(f"🎯 專屬測驗", key=f"test_btn_{w['topic']}", use_container_width=True, type="primary"):
-                        with st.spinner("AI 導師正在調用此主題題目..."):
-                            res = get_quiz_questions(w["topic"], count=3)
-                            if res.get("status") == "success":
-                                st.session_state.quiz_questions = res["quiz_data"]["questions"]
-                                st.session_state.quiz_sources = res["quiz_data"].get("sources", [])
-                                st.session_state.quiz_index = 0
-                                st.session_state.quiz_answers = []
-                                st.session_state.quiz_in_progress = True
-                                st.session_state.quiz_mode = "multi"
-                                st.session_state.current_guide = None
-                                st.session_state.current_quiz = None
-                                st.session_state.quiz_answered = False
-                                st.session_state.quiz_selected_option = None
-                                st.session_state.quiz_result_correct = None
-                                st.toast(f"🎯 成功載入主題「{w['topic']}」的 3 題複習題目！", icon="🎯")
-                                st.rerun()
-                            else:
-                                st.error("獲取測驗題目失敗！")
-                st.markdown("<div style='margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.05);'></div>", unsafe_allow_html=True)
+                # 新增 查看歷史錯題
+                with st.expander(f"🔍 查看「{w['topic']}」歷史錯題"):
+                    topic_quizzes = [q for q in all_quizzes if q["topic"] == w["topic"]]
+                    if not topic_quizzes:
+                        st.info("尚無此主題的詳細考題紀錄。")
+                    else:
+                        for idx, q in enumerate(topic_quizzes):
+                            st.markdown(f"**Q{idx+1}:** {q['question']}")
+                            st.markdown(f"*正確解答:* `{q['answer']}`")
+                            st.caption(f"{q['explanation']}")
+                            st.divider()
                 
     with col2:
-        # 視圖 1: 觀念複習導讀講義
-        if st.session_state.current_guide:
-            guide = st.session_state.current_guide
-            st.markdown(f'<h3 style="margin-top: 10px;">📖 觀念複習導讀：{guide["topic"]}</h3>', unsafe_allow_html=True)
-            
-            # 顯示講義內容
-            st.markdown(f"""
-            <div class="glass-card" style="border-top: 4px solid #00f2fe; padding: 24px; max-height: 480px; overflow-y: auto;">
-                {markdown.markdown(guide["guide_content"], extensions=['fenced_code', 'tables'])}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # 顯示來源文檔
-            if guide.get("sources"):
-                with st.expander("📄 參考文檔與來源段落"):
-                    for idx, src in enumerate(guide["sources"]):
-                        st.markdown(f"""
-                        <div style="background: rgba(255,255,255,0.02); border-left: 3px solid #00f2fe; padding: 10px; margin-bottom: 10px; border-radius: 4px;">
-                            <div style="font-weight: 700; color: #00f2fe; font-size: 0.85rem;">來源 {idx+1}: {src['filename']} (第 {src['page_number']} 頁)</div>
-                            <p style="font-size: 0.8rem; color: #a2a2b5; margin-top: 4px; margin-bottom: 0px;">"{src['preview']}"</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-            
-            # 底部控制按鈕
-            col_btn1, col_btn2 = st.columns(2)
-            with col_btn1:
-                if st.button("🎯 立即進行此主題測驗 (3 題)", type="primary", use_container_width=True):
-                    with st.spinner("AI 導師正在出題中..."):
-                        res = get_quiz_questions(guide["topic"], count=3)
-                        if res.get("status") == "success":
-                            st.session_state.quiz_questions = res["quiz_data"]["questions"]
-                            st.session_state.quiz_sources = res["quiz_data"].get("sources", [])
-                            st.session_state.quiz_index = 0
-                            st.session_state.quiz_answers = []
-                            st.session_state.quiz_in_progress = True
-                            st.session_state.quiz_mode = "multi"
-                            st.session_state.current_guide = None
-                            st.session_state.current_quiz = None
-                            st.session_state.quiz_answered = False
-                            st.session_state.quiz_selected_option = None
-                            st.session_state.quiz_result_correct = None
-                            st.rerun()
-                        else:
-                            st.error("出題失敗！")
-            with col_btn2:
-                if st.button("⬅️ 返回測驗選單 / 關閉複習", type="secondary", use_container_width=True):
-                    st.session_state.current_guide = None
-                    st.rerun()
+        st.markdown('<h3 style="margin-top: 10px;">🎯 弱點觀念複習測驗</h3>', unsafe_allow_html=True)
+        
+        # 出題按鈕
+        if st.button("🎲 呼叫 Quiz Master 生成專屬複習題", type="primary", use_container_width=True):
+            with st.spinner("AI 導師正在調閱您的弱點記憶出題中..."):
+                try:
+                    # 我們直接發送一個隱藏對話意圖，讓 Agent 分流出題
+                    # 或是直接發送 chat 意圖「幫我出幾題測驗來複習」
+                    res = send_chat_message("幫我出幾題測驗來複習", force_intent="QUIZ")
+                    if res.get("status") == "error":
+                        st.error(res.get("reply", "未知錯誤"))
+                    elif res.get("quiz_data"):
+                        st.session_state.current_quiz = res["quiz_data"]
+                        st.session_state.quiz_answered = False
+                        st.session_state.quiz_selected_option = None
+                        st.session_state.quiz_result_correct = None
+                    else:
+                        st.error("出題失敗，後端未傳回有效題目！")
+                except Exception as e:
+                    st.error(f"連線失敗：{e}")
                     
-        # 視圖 2: 多題目複習測驗中 (Multi-Question Quiz Flow)
-        elif st.session_state.quiz_in_progress and st.session_state.quiz_questions:
-            questions = st.session_state.quiz_questions
-            idx = st.session_state.quiz_index
-            total_qs = len(questions)
-            q = questions[idx]
-            
-            st.markdown(f'<h3 style="margin-top: 10px;">🎯 專屬複習測驗</h3>', unsafe_allow_html=True)
-            st.write(f"📝 **主題：{q.get('topic', '觀念測驗')}** — 第 {idx+1} / {total_qs} 題")
-            
-            # 進度條
-            st.progress((idx) / total_qs)
-            
-            # 題目卡片
-            st.markdown(f"""
-            <div class="glass-card" style="border-left: 5px solid #7F00FF;">
-                <h4 style="margin-top: 0px; font-size: 1.15rem; line-height: 1.5; color: #ffffff;">❓ {q["question"]}</h4>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            options = q["options"]
-            option_list = ["A", "B", "C", "D"]
-            
-            # 檢查當前題目是否已作答
-            answered = len(st.session_state.quiz_answers) > idx
-            
-            if not answered:
-                st.markdown("##### 選擇您的答案：")
-                for opt in option_list:
-                    if st.button(f"Option {opt}： {options[opt]}", key=f"multi_opt_{idx}_{opt}", use_container_width=True, type="secondary"):
-                        is_correct = (opt == q["answer"])
-                        st.session_state.quiz_answers.append({
-                            "user_ans": opt,
-                            "correct": is_correct,
-                            "question": q["question"],
-                            "options": options,
-                            "correct_ans": q["answer"],
-                            "explanation": q["explanation"]
-                        })
-                        submit_quiz_result(q.get("topic", "綜合知識"), is_correct)
-                        st.rerun()
-            else:
-                ans_info = st.session_state.quiz_answers[idx]
-                user_ans = ans_info["user_ans"]
-                correct_ans = ans_info["correct_ans"]
-                is_correct = ans_info["correct"]
-                
-                if is_correct:
-                    st.markdown(f"""
-                    <div style="background: rgba(0, 242, 254, 0.1); border: 2px solid #00f2fe; padding: 15px; border-radius: 12px; margin-bottom: 15px; text-align: center;">
-                        <h3 style="color: #00f2fe; margin-top: 0px; margin-bottom: 5px;">🎉 回答正確！</h3>
-                        <p style="margin: 0;">您的選擇為 <b>{user_ans}</b></p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    st.markdown(f"""
-                    <div style="background: rgba(255, 0, 127, 0.1); border: 2px solid #ff007f; padding: 15px; border-radius: 12px; margin-bottom: 15px; text-align: center;">
-                        <h3 style="color: #ff007f; margin-top: 0px; margin-bottom: 5px;">❌ 回答錯誤！</h3>
-                        <p style="margin: 0;">您的選擇為 <b>{user_ans}</b>，正確答案應為 <b style="color: #00f2fe; font-size:1.15rem;">{correct_ans}</b></p>
-                    </div>
-                    """, unsafe_allow_html=True)
+        custom_topic = st.chat_input("或在此指定範圍出題 (例如: 針對機器學習出題)", key="quiz_input")
+        if custom_topic:
+            with st.spinner(f"AI 導師正在針對「{custom_topic}」出題中..."):
+                try:
+                    res = send_chat_message(custom_topic, force_intent="QUIZ")
+                    if res.get("status") == "error":
+                        st.error(res.get("reply", "未知錯誤"))
+                    elif res.get("quiz_data"):
+                        st.session_state.current_quiz = res["quiz_data"]
+                        st.session_state.quiz_answered = False
+                        st.session_state.quiz_selected_option = None
+                        st.session_state.quiz_result_correct = None
+                    else:
+                        st.error("出題失敗，後端未傳回有效題目！")
+                except Exception as e:
+                    st.error(f"連線失敗：{e}")
                     
-                st.markdown(f"""
-                <div class="glass-card" style="border-top: 4px solid #00f2fe; background: rgba(30,30,45,0.4); padding: 16px; margin-bottom: 15px;">
-                    <h5 style="color: #00f2fe; margin-top:0px; margin-bottom: 8px;">💡 AI 老師解析：</h5>
-                    <p style="line-height: 1.6; font-size: 0.95rem; margin-bottom: 0px;">{ans_info["explanation"]}</p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # 顯示本題出處
-                if hasattr(st.session_state, "quiz_sources") and st.session_state.quiz_sources:
-                    with st.expander("📄 檢視本題參考文檔來源段落"):
-                        for s_idx, src in enumerate(st.session_state.quiz_sources):
-                            st.markdown(f"""
-                            <div style="background: rgba(255,255,255,0.01); border-left: 2px solid #7F00FF; padding: 8px; margin-bottom: 8px; border-radius: 4px;">
-                                <div style="font-weight: 700; color: #c8a2ff; font-size: 0.8rem;">{src['filename']} (第 {src['page_number']} 頁)</div>
-                                <p style="font-size: 0.75rem; color: #a2a2b5; margin-top: 2px; margin-bottom: 0px;">"{src['preview']}"</p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                
-                # 下一步按鈕
-                if idx < total_qs - 1:
-                    if st.button("➡️ 下一題", type="primary", use_container_width=True):
-                        st.session_state.quiz_index = idx + 1
-                        st.rerun()
-                else:
-                    if st.button("📊 查看測驗總成績", type="primary", use_container_width=True):
-                        st.session_state.quiz_in_progress = False
-                        st.rerun()
-                        
-        # 視圖 3: 測驗結算與成績報告 (Score Report View)
-        elif not st.session_state.quiz_in_progress and st.session_state.quiz_questions and st.session_state.quiz_answers:
-            st.markdown('<h3 style="margin-top: 10px;">📊 觀念測驗成績單 (Score Report)</h3>', unsafe_allow_html=True)
-            
-            answers = st.session_state.quiz_answers
-            total_qs = len(answers)
-            corrects = sum(1 for a in answers if a["correct"])
-            score_rate = (corrects / total_qs) * 100
-            
-            if score_rate == 100:
-                rating = "🏆 完美無瑕！您已完全理解此主題的所有概念！"
-                color = "#00f2fe"
-            elif score_rate >= 70:
-                rating = "🟢 太棒了！您對這個概念有相當扎實的理解！"
-                color = "#38ef7d"
-            elif score_rate >= 40:
-                rating = "🟡 還可以！建議針對答錯題目進行講義溫習。"
-                color = "#f5af19"
-            else:
-                rating = "🔴 亟需加強！建議點擊下方「觀念複習」深入研讀講義。"
-                color = "#ff007f"
-                
-            st.markdown(f"""
-            <div class="glass-card" style="border-top: 5px solid {color}; text-align: center; padding: 30px 20px;">
-                <h1 style="color: {color}; font-size: 3.5rem; margin: 0 0 10px 0;">{score_rate:.0f}%</h1>
-                <h4 style="color: #ffffff; margin-top: 0px; margin-bottom: 10px;">答對 {corrects} / {total_qs} 題</h4>
-                <p style="color: #a2a2b5; font-size: 0.95rem; margin-bottom: 0px;">{rating}</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            if score_rate == 100:
-                st.balloons()
-                
-            st.markdown("#### 📝 各題答題回顧：")
-            
-            # 逐題展開
-            for i, a in enumerate(answers):
-                status_badge = "🟢 正確" if a["correct"] else "❌ 錯誤"
-                badge_color = "#00f2fe" if a["correct"] else "#ff007f"
-                
-                with st.expander(f"第 {i+1} 題: {a['question'][:30]}... ({status_badge})"):
-                    st.markdown(f"""
-                    <div style="padding: 10px; line-height: 1.5;">
-                        <p style="font-weight: 700; color: #ffffff; font-size: 1rem; margin-top: 0;">❓ {a['question']}</p>
-                        <div style="margin-left: 10px; margin-bottom: 15px;">
-                            <p style="margin: 3px 0; color: {'#00f2fe' if a['correct_ans']=='A' else '#a2a2b5'};"><b>A.</b> {a['options']['A']}</p>
-                            <p style="margin: 3px 0; color: {'#00f2fe' if a['correct_ans']=='B' else '#a2a2b5'};"><b>B.</b> {a['options']['B']}</p>
-                            <p style="margin: 3px 0; color: {'#00f2fe' if a['correct_ans']=='C' else '#a2a2b5'};"><b>C.</b> {a['options']['C']}</p>
-                            <p style="margin: 3px 0; color: {'#00f2fe' if a['correct_ans']=='D' else '#a2a2b5'};"><b>D.</b> {a['options']['D']}</p>
-                        </div>
-                        <div style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 10px;">
-                            <span style="background: rgba(0, 242, 254, 0.1); color: #00f2fe; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; font-weight:600; margin-right: 10px;">正確答案: {a['correct_ans']}</span>
-                            <span style="background: rgba({ '0,242,254,0.1' if a['correct'] else '255,0,127,0.1' }); color: {badge_color}; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; font-weight:600;">您的選擇: {a['user_ans']}</span>
-                        </div>
-                        <p style="color: #a2a2b5; font-size: 0.88rem; margin-top: 12px; margin-bottom: 5px;"><b>💡 解析說明：</b><br>{a['explanation']}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-            if st.button("🔄 結束並返回測驗選單", type="primary", use_container_width=True):
-                st.session_state.quiz_questions = []
-                st.session_state.quiz_answers = []
-                st.session_state.quiz_index = 0
-                st.session_state.quiz_in_progress = False
-                st.session_state.quiz_mode = "single"
-                st.rerun()
-                
-        # 視圖 4: 單題目複習測驗中 (相容智能對話助教的單題 Quiz intent)
-        elif st.session_state.current_quiz:
-            quiz = st.session_state.current_quiz
-            st.markdown('<h3 style="margin-top: 10px;">🎯 AI 智能推薦複習題</h3>', unsafe_allow_html=True)
-            
+        st.markdown("---")
+        
+        quiz = st.session_state.current_quiz
+        
+        if not quiz:
+            st.info("請點擊上方按鈕，或在聊天室輸入「幫我出題」，AI 導師將為您生成複習測驗。")
+        else:
+            # 顯示題目
             st.markdown(f"""
             <div class="glass-card" style="border-left: 5px solid #7F00FF;">
                 <span style="background: rgba(127, 0, 255, 0.2); color: #c8a2ff; font-size: 0.8rem; padding: 4px 10px; border-radius: 4px; font-weight:600; text-transform: uppercase;">
@@ -1055,20 +901,26 @@ with tab3:
             </div>
             """, unsafe_allow_html=True)
             
+            # 使用 Streamlit columns 或 radio 做互動選擇
             options = quiz["options"]
             option_list = ["A", "B", "C", "D"]
             
             st.markdown("##### 選擇您的答案：")
             
             if not st.session_state.quiz_answered:
+                # 渲染選項按鈕
                 for opt in option_list:
                     if st.button(f"Option {opt}： {options[opt]}", key=f"opt_btn_{opt}", use_container_width=True, type="secondary"):
+                        # 使用者點擊作答
                         st.session_state.quiz_selected_option = opt
                         st.session_state.quiz_answered = True
                         st.session_state.quiz_result_correct = (opt == quiz["answer"])
+                        
+                        # 呼叫 API 更新後端弱點分數
                         submit_quiz_result(quiz["topic"], st.session_state.quiz_result_correct)
                         st.rerun()
             else:
+                # 答題後的精美結果呈現
                 user_ans = st.session_state.quiz_selected_option
                 correct_ans = quiz["answer"]
                 is_correct = st.session_state.quiz_result_correct
@@ -1090,6 +942,7 @@ with tab3:
                     </div>
                     """, unsafe_allow_html=True)
                 
+                # 顯示 AI 解析說明
                 st.markdown(f"""
                 <div class="glass-card" style="border-top: 4px solid #00f2fe; background: rgba(30,30,45,0.4);">
                     <h5 style="color: #00f2fe; margin-top:0px;">💡 AI 老師的深入解析說明：</h5>
@@ -1097,79 +950,10 @@ with tab3:
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # 顯示來源文檔
-                if quiz.get("sources"):
-                    with st.expander("📄 檢視本題參考文檔來源段落"):
-                        for s_idx, src in enumerate(quiz["sources"]):
-                            st.markdown(f"""
-                            <div style="background: rgba(255,255,255,0.01); border-left: 2px solid #7F00FF; padding: 8px; margin-bottom: 8px; border-radius: 4px;">
-                                <div style="font-weight: 700; color: #c8a2ff; font-size: 0.8rem;">{src['filename']} (第 {src['page_number']} 頁)</div>
-                                <p style="font-size: 0.75rem; color: #a2a2b5; margin-top: 2px; margin-bottom: 0px;">"{src['preview']}"</p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                
+                # 下一題
                 if st.button("🔄 繼續下一題測驗", type="primary", use_container_width=True):
                     st.session_state.current_quiz = None
                     st.session_state.quiz_answered = False
                     st.session_state.quiz_selected_option = None
                     st.session_state.quiz_result_correct = None
                     st.rerun()
-                    
-        # 視圖 5: 測驗主選單 (General Quiz Menu)
-        else:
-            st.markdown('<h3 style="margin-top: 10px;">🎯 AI 觀念複習測驗</h3>', unsafe_allow_html=True)
-            st.markdown('<p style="color: #8c8c9e; font-size: 0.85rem; margin-top: 0px;">設定測驗規格，AI 導師將即時基於文件與您的弱點記憶庫出題。</p>', unsafe_allow_html=True)
-            
-            # 1. 取得所有標籤
-            doc_tags = set()
-            docs = get_documents_list()
-            for d in docs:
-                for tag in d.get("tags", []):
-                    doc_tags.add(tag)
-            doc_tags_list = list(doc_tags)
-            
-            quiz_scope = st.radio(
-                "選擇測驗範圍：",
-                ["依據我的長期弱點自動出題 (智能弱點模式)", "隨機挑選知識庫主題 (隨機抽考模式)", "自訂指定主題測驗"]
-            )
-            
-            selected_topic = None
-            if quiz_scope == "自訂指定主題測驗":
-                if doc_tags_list:
-                    selected_topic = st.selectbox("選擇測驗主題：", doc_tags_list)
-                else:
-                    st.info("知識庫尚無主題標籤。請先上傳 PDF 或 Markdown 檔案建置知識庫！")
-                    st.stop()
-            
-            count_scope = st.slider("測驗題數設定：", min_value=1, max_value=5, value=3)
-            
-            if st.button("🚀 開始測驗", type="primary", use_container_width=True):
-                with st.spinner("AI 導師正在為您組卷中..."):
-                    topic_to_test = None
-                    if quiz_scope == "隨機挑選知識庫主題 (隨機抽考模式)" and doc_tags_list:
-                        import random
-                        topic_to_test = random.choice(doc_tags_list)
-                    elif quiz_scope == "自訂指定主題測驗":
-                        topic_to_test = selected_topic
-                    
-                    res = get_quiz_questions(topic_to_test, count=count_scope)
-                    if res.get("status") == "success":
-                        quiz_data = res["quiz_data"]
-                        if count_scope == 1:
-                            st.session_state.current_quiz = quiz_data
-                            st.session_state.quiz_answered = False
-                            st.session_state.quiz_selected_option = None
-                            st.session_state.quiz_result_correct = None
-                            st.session_state.quiz_mode = "single"
-                        else:
-                            st.session_state.quiz_questions = quiz_data["questions"]
-                            st.session_state.quiz_sources = quiz_data.get("sources", [])
-                            st.session_state.quiz_index = 0
-                            st.session_state.quiz_answers = []
-                            st.session_state.quiz_in_progress = True
-                            st.session_state.quiz_mode = "multi"
-                            st.session_state.current_guide = None
-                            st.session_state.current_quiz = None
-                        st.rerun()
-                    else:
-                        st.error("組卷失敗！請確認後端連線。")
