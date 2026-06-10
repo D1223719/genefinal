@@ -71,7 +71,21 @@ def extractor_tool(text: str) -> Dict[str, Any]:
 """
 
     try:
-        response = llm.invoke([HumanMessage(content=prompt)])
+        import time
+        max_retries = 4
+        for attempt in range(max_retries):
+            try:
+                response = llm.invoke([HumanMessage(content=prompt)])
+                break
+            except Exception as e:
+                if '429' in str(e) or 'RESOURCE_EXHAUSTED' in str(e):
+                    if attempt < max_retries - 1:
+                        print(f"LLM Rate limit hit, sleeping for 30 seconds... (Attempt {attempt+1}/{max_retries})")
+                        time.sleep(30)
+                    else:
+                        raise e
+                else:
+                    raise e
         cleaned_content = clean_json_string(extract_text_content(response.content))
         result = json.loads(cleaned_content)
         

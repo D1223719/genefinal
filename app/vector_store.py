@@ -19,34 +19,40 @@ def get_embeddings() -> GoogleGenerativeAIEmbeddings:
         google_api_key=api_key
     )
 
+import threading
+
+_vector_store_instance = None
+_vector_store_lock = threading.Lock()
+
 def get_vector_store() -> InMemoryVectorStore:
-    """載入或初始化持久化的向量資料庫"""
-    embeddings = get_embeddings()
-    store_path = Path(settings.VECTOR_STORE_PATH)
-    
-    if store_path.exists() and store_path.stat().st_size > 0:
-        try:
-            # 載入現有向量庫
-            store = InMemoryVectorStore.load(str(store_path), embeddings)
-            print(f"Successfully loaded persistent vector store from {store_path}")
-            return store
-        except Exception as e:
-            print(f"Error loading persistent vector store: {e}. Re-initializing...")
+    global _vector_store_instance
+    with _vector_store_lock:
+        if _vector_store_instance is not None:
+            return _vector_store_instance
             
-    # 如果不存在或載入失敗，建立全新向量資料庫
-    store = InMemoryVectorStore(embeddings)
-    return store
+        embeddings = get_embeddings()
+        store_path = Path(settings.VECTOR_STORE_PATH)
+        
+        if store_path.exists() and store_path.stat().st_size > 0:
+            try:
+                _vector_store_instance = InMemoryVectorStore.load(str(store_path), embeddings)
+                print(f"Successfully loaded persistent vector store from {store_path}")
+                return _vector_store_instance
+            except Exception as e:
+                print(f"Error loading persistent vector store: {e}. Re-initializing...")
+                
+        _vector_store_instance = InMemoryVectorStore(embeddings)
+        return _vector_store_instance
 
 def persist_vector_store(store: InMemoryVectorStore):
-    """將向量資料庫持久化儲存至本機檔案"""
-    store_path = Path(settings.VECTOR_STORE_PATH)
-    try:
-        # 確保父目錄存在
-        store_path.parent.mkdir(parents=True, exist_ok=True)
-        store.dump(str(store_path))
-        print(f"Successfully persisted vector store to {store_path}")
-    except Exception as e:
-        print(f"Failed to persist vector store: {e}")
+    with _vector_store_lock:
+        store_path = Path(settings.VECTOR_STORE_PATH)
+        try:
+            store_path.parent.mkdir(parents=True, exist_ok=True)
+            store.dump(str(store_path))
+            print(f"Successfully persisted vector store to {store_path}")
+        except Exception as e:
+            print(f"Failed to persist vector store: {e}")
 
 def hybrid_search(query: str, limit: int = 5) -> List[Dict[str, Any]]:
     """
@@ -139,3 +145,22 @@ def hybrid_search(query: str, limit: int = 5) -> List[Dict[str, Any]]:
     # --- 3. 排序與限額回傳 ---
     sorted_results = sorted(results_map.values(), key=lambda x: x["final_score"], reverse=True)
     return sorted_results[:limit]
+
+def delete_documents_by_id(document_id: int):
+    """
+    從 InMemoryVectorStore 中刪除特定 document_id 的資料，並重新持久化。
+    """
+    store = get_vector_store()
+    
+    if hasattr(store, "store") and isinstance(store.store, dict):
+        keys_to_delete = []
+        for item_id, item in store.store.items():
+            metadata = item.get("metadata", {})
+            if metadata.get("document_id") == document_id:
+                keys_to_delete.append(item_id)
+                
+        for k in keys_to_delete:
+            del store.store[k]
+            
+        print(f"Deleted {len(keys_to_delete)} chunks for document_id={document_id} from vector store.")
+        persist_vector_store(store)

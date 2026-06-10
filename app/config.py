@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 # 載入 .env 檔案中的環境變數
 env_path = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(dotenv_path=env_path)
+load_dotenv(dotenv_path=env_path, override=True)
 
 class Settings:
     # Gemini API 金鑰
@@ -31,3 +31,9 @@ settings = Settings()
 # 檢查 API Key 是否有被設定（若為預設預留字串也視為未設定）
 def is_api_key_configured() -> bool:
     return bool(settings.GEMINI_API_KEY and settings.GEMINI_API_KEY != "your_gemini_api_key_here")
+
+# Trigger reload for new API key
+
+# Reload trigger
+
+# Reload trigger 2

@@ -75,6 +75,19 @@ class WeaknessMemory(Base):
     user = relationship("User", back_populates="weaknesses")
 
 
+class QuizHistory(Base):
+    __tablename__ = "quiz_histories"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    topic = Column(String(100), nullable=False)
+    question = Column(Text, nullable=False)
+    options_json = Column(Text, nullable=False)
+    answer = Column(String(10), nullable=False)
+    explanation = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User")
+
 class KnowledgeGraph(Base):
     __tablename__ = "knowledge_graphs"
     id = Column(Integer, primary_key=True, index=True)
@@ -296,5 +309,57 @@ def get_knowledge_graph() -> Dict[str, List[Dict[str, Any]]]:
             })
             
         return {"nodes": nodes_list, "edges": edges_list}
+    finally:
+        db.close()
+
+# --- Quiz History CRUD ---
+def save_quiz_history(topic: str, question: str, options: dict, answer: str, explanation: str):
+    db = SessionLocal()
+    try:
+        user_id = get_default_user_id()
+        quiz = QuizHistory(
+            user_id=user_id,
+            topic=topic,
+            question=question,
+            options_json=json.dumps(options),
+            answer=answer,
+            explanation=explanation
+        )
+        db.add(quiz)
+        db.commit()
+    finally:
+        db.close()
+
+def get_quiz_history() -> List[Dict[str, Any]]:
+    db = SessionLocal()
+    try:
+        user_id = get_default_user_id()
+        quizzes = db.query(QuizHistory).filter(QuizHistory.user_id == user_id).order_by(QuizHistory.created_at.desc()).all()
+        return [{
+            "id": q.id,
+            "topic": q.topic,
+            "question": q.question,
+            "options": json.loads(q.options_json),
+            "answer": q.answer,
+            "explanation": q.explanation,
+            "created_at": q.created_at.isoformat()
+        } for q in quizzes]
+    finally:
+        db.close()
+
+def delete_quiz_history(quiz_id: int):
+    db = SessionLocal()
+    try:
+        db.query(QuizHistory).filter(QuizHistory.id == quiz_id).delete()
+        db.commit()
+    finally:
+        db.close()
+
+# --- Document Delete ---
+def delete_document(document_id: int):
+    db = SessionLocal()
+    try:
+        db.query(Document).filter(Document.id == document_id).delete()
+        db.commit()
     finally:
         db.close()

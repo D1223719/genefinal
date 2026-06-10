@@ -26,6 +26,9 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
     作為系統的大腦，負責分析使用者的最新訊息意圖，分類為 RAG（知識問答）、QUIZ（測驗要求）或 GENERAL（一般對話），
     藉此決定後續執行流程。
     """
+    if state.get("intent"):
+        return {"intent": state["intent"]}
+        
     last_message = state["messages"][-1].content
     llm = get_llm(temperature=0.0)  # 使用 lowest temp 以獲得精確分類
     
