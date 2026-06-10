@@ -53,7 +53,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 class ChatRequest(BaseModel):
     message: str
     session_id: str = "default"
-    force_intent: str = None
+    force_intent: Optional[str] = None
 
 class QuizSubmitRequest(BaseModel):
     topic: str
