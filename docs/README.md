@@ -88,7 +88,7 @@ graph TD
     User([使用者 User]) -->|上傳文件 / 聊天問答| App[Streamlit 前端 UI]
     App -->|API 請求| FastAPI[FastAPI 後端]
 
-    subgraph 背景處理管道 (Pipeline)
+    subgraph Pipeline [背景處理管道 Pipeline]
         FastAPI -->|文本萃取| Extractor[摘要 & 標籤提取]
         Extractor -->|建構圖譜| GraphBuilder[知識關聯推論]
         Extractor -->|文件切塊| EmbedModel[向量化 Embedding]
@@ -96,7 +96,7 @@ graph TD
         GraphBuilder --> MySQL[(SQLite 資料庫)]
     end
 
-    subgraph 多智能體協作 (LangGraph Multi-Agent)
+    subgraph LangGraph [多智能體協作 LangGraph Multi-Agent]
         FastAPI -->|對話訊息| Planner[大腦 Planner Agent]
         
         Planner -->|意圖分析: 問答| RAGAgent[RAG 檢索智能體]
