@@ -178,28 +178,30 @@ def graph_builder_tool(new_tags: List[str], summary: str) -> Dict[str, Any]:
 # 3. QuizMasterTool
 # ==========================================
 
-def quiz_master_tool(user_id: int) -> Dict[str, Any]:
+def quiz_master_tool(user_id: int, topic: Optional[str] = None) -> Dict[str, Any]:
     """
     QuizMasterTool: 根據長期弱點記憶產生多選題。
+    如果指定了 topic，則針對該 topic 出題；否則自動從弱點或隨機文件中挑選。
     """
     db = SessionLocal()
-    topic = "綜合知識"
     error_count = 0
     try:
-        # 找出使用者錯誤次數最高且大於 0 的弱點
-        weakness = db.query(WeaknessMemory)\
-                     .filter(WeaknessMemory.user_id == user_id)\
-                     .order_by(WeaknessMemory.error_count.desc())\
-                     .first()
-        if weakness and weakness.error_count > 0:
-            topic = weakness.topic
-            error_count = weakness.error_count
-        else:
-            # 若無弱點，隨機從現有標籤中選一個，或從隨機文件中選
-            doc = db.query(Document).order_by(Document.created_at.desc()).first()
-            if doc and doc.tags:
-                import random
-                topic = random.choice(doc.tags)
+        if topic is None:
+            topic = "綜合知識"
+            # 找出使用者錯誤次數最高且大於 0 的弱點
+            weakness = db.query(WeaknessMemory)\
+                         .filter(WeaknessMemory.user_id == user_id)\
+                         .order_by(WeaknessMemory.error_count.desc())\
+                         .first()
+            if weakness and weakness.error_count > 0:
+                topic = weakness.topic
+                error_count = weakness.error_count
+            else:
+                # 若無弱點，隨機從現有標籤中選一個，或從隨機文件中選
+                doc = db.query(Document).order_by(Document.created_at.desc()).first()
+                if doc and doc.tags:
+                    import random
+                    topic = random.choice(doc.tags)
     finally:
         db.close()
         
