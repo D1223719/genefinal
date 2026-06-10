@@ -10,15 +10,6 @@
 * **辛晴** (D1150271)
 * **薛帆凱** (D1150313)
 
-### 5. 🗂️ 檔案與圖譜同步管理 (File & Graph Management)
-* **批次文件刪除**：內建文件清單選取框，支援一鍵批次刪除過期或上傳錯誤的文件。
-* **孤立節點自動清除**：當文件被刪除時，系統除了清空相關的向量記憶，更會自動深入 SQLite 同步清理知識圖譜中不再被任何文件關聯的孤立概念標籤 (Orphan Nodes)，維持圖譜的純淨。
-
-### 6. ⚡ 極速非同步與抗限流防護 (Robust & Async Pipeline)
-* **獨立守護執行緒 (Daemon Threads)**：將龐大繁重的文件解析、切塊與圖譜建構任務，完全抽離 FastAPI 的主執行緒。即使一口氣上傳數十個檔案，前端網頁與對話 API 也絕不卡頓。
-* **智慧休眠與重試防護 (Rate-Limit Proof)**：針對 Google API 免費版嚴格的每分鐘配額，系統在 LLM (文本萃取) 與 Embedding (向量化) 的每一道關卡都實作了完整的自動休眠重試機制。徹底解決 429 Resource Exhausted 報錯，確保大容量檔案穩定上傳到底。
-* **全新 API Key 支援**：支援最新版 Google AI Studio AQ. 開頭的 API 金鑰格式，並內建記憶體強制覆蓋機制，更換金鑰即時生效。
-
 ---
 
 ## ✨ 核心特色與功能 (Key Features)
@@ -41,6 +32,16 @@
 
 ### 4. 🔄 一鍵無痕重置模式
 * 為了期末報告 Demo 展示需求，側邊欄內建「🚨 危機救援：一鍵重置」按鈕。點擊後能瞬間清空 SQLite 資料庫、向量庫與上傳檔案，讓系統完美回到初始狀態，方便隨時為下一位評審重新展示。
+
+### 5. 🗂️ 檔案與圖譜同步管理 (File & Graph Management)
+* **批次文件刪除**：內建文件清單選取框，支援一鍵批次刪除過期或上傳錯誤的文件。
+* **孤立節點自動清除**：當文件被刪除時，系統除了清空相關的向量記憶，更會自動深入 SQLite 同步清理知識圖譜中不再被任何文件關聯的孤立概念標籤 (Orphan Nodes)，維持圖譜的純淨。
+
+### 6. ⚡ 極速非同步與抗限流防護 (Robust & Async Pipeline)
+* **獨立守護執行緒 (Daemon Threads)**：將龐大繁重的文件解析、切塊與圖譜建構任務，完全抽離 FastAPI 的主執行緒。即使一口氣上傳數十個檔案，前端網頁與對話 API 也絕不卡頓。
+* **智慧休眠與重試防護 (Rate-Limit Proof)**：針對 Google API 免費版嚴格的每分鐘配額，系統在 LLM (文本萃取) 與 Embedding (向量化) 的每一道關卡都實作了完整的自動休眠重試機制。徹底解決 429 Resource Exhausted 報錯，確保大容量檔案穩定上傳到底。
+* **全新 API Key 支援**：支援最新版 Google AI Studio `AQ.` 開頭的 API 金鑰格式，並內建記憶體強制覆蓋機制，更換金鑰即時生效。
+
 
 ---
 
@@ -82,32 +83,3 @@ streamlit run frontend.py
 
 ---
 
-## 👨‍💻 系統架構圖預覽
-```mermaid
-graph TD
-    User([使用者 User]) -->|上傳文件 / 聊天問答| App[Streamlit 前端 UI]
-    App -->|API 請求| FastAPI[FastAPI 後端]
-
-    subgraph 背景處理管道 (Pipeline)
-        FastAPI -->|文本萃取| Extractor[摘要 & 標籤提取]
-        Extractor -->|建構圖譜| GraphBuilder[知識關聯推論]
-        Extractor -->|文件切塊| EmbedModel[向量化 Embedding]
-        EmbedModel --> VectorDB[(向量資料庫)]
-        GraphBuilder --> MySQL[(SQLite 資料庫)]
-    end
-
-    subgraph 多智能體協作 (LangGraph Multi-Agent)
-        FastAPI -->|對話訊息| Planner[大腦 Planner Agent]
-        
-        Planner -->|意圖分析: 問答| RAGAgent[RAG 檢索智能體]
-        Planner -->|意圖分析: 測驗| QuizMaster[Quiz 測驗智能體]
-        
-        RAGAgent -->|Hybrid Search| VectorDB
-        QuizMaster -->|讀取錯誤紀錄| MySQL
-        
-        RAGAgent -->|回覆與來源追溯| Output[Response]
-        QuizMaster -->|動態生成題目| Output
-    end
-    
-    Output --> FastAPI --> App
-```
