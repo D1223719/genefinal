@@ -146,13 +146,43 @@ def quiz_agent_node(state: AgentState) -> Dict[str, Any]:
     調用 QuizMasterTool，針對使用者的知識弱點主題動態出題，並傳回題目。
     """
     user_id = get_default_user_id()
+    query = state["messages"][-1].content
     
+    # 利用 LLM 從使用者最新訊息中提取具體主題 (例如：「複習 Transformer」-> 「Transformer」)
+    llm = get_llm(temperature=0.0)
+    prompt = f"""
+請分析使用者的最新訊息，判斷他是否指定了要測驗或複習的「特定知識主題」或「標籤名稱」。
+- 如果使用者指定了特定主題，例如：「我想測驗 Transformer」-> 提取為「Transformer」；「幫我出幾題 Attention 相關的題目」-> 提取為「Attention」。
+- 如果使用者沒有指定具體主題，只是要求一般的測驗或出題，例如：「幫我出題」、「我想考試」、「我想做測驗」、「來個複習」-> 請只回傳 NONE。
+
+請只回傳提取的主題名稱（小於 10 字，繁體中文，除非是英文專有名詞）或回傳 NONE，不要包含任何其他解釋與符號。
+
+使用者訊息：
+"{query}"
+"""
+    
+    extracted_topic = None
+    try:
+        import re
+        response = llm.invoke([HumanMessage(content=prompt)])
+        extracted_text = extract_text_content(response.content).strip().upper()
+        if "NONE" not in extracted_text and extracted_text != "":
+            extracted_topic = extracted_text.replace('"', '').replace("'", "").strip()
+            # 將可能的中文引號或符號移除
+            extracted_topic = re.sub(r'[「」『』【】]', '', extracted_topic)
+    except Exception as e:
+        print(f"Failed to extract topic from query: {e}")
+        extracted_topic = None
+        
     # 產生測驗
-    quiz = quiz_master_tool(user_id)
+    quiz = quiz_master_tool(user_id, topic=extracted_topic)
     topic = quiz["topic"]
     
-    intro_message = f"好的！我從長期記憶庫中分析出您對 **「{topic}」** 這個知識點需要加強複習。我已為您精心出了一道觀念題目，請在下方作答："
-    
+    if extracted_topic:
+        intro_message = f"好的！已為您準備了關於 **「{topic}」** 的專屬題目，請在下方作答："
+    else:
+        intro_message = f"好的！我從長期記憶庫中分析出您對 **「{topic}」** 這個知識點需要加強複習。我已為您精心出了一道觀念題目，請在下方作答："
+        
     return {
         "messages": [AIMessage(content=intro_message)],
         "quiz_data": quiz

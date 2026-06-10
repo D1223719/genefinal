@@ -70,6 +70,8 @@ class WeaknessMemory(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     topic = Column(String(100), nullable=False)  # 知識主題
     error_count = Column(Integer, default=0)     # 答錯次數
+    correct_count = Column(Integer, default=0)   # 答對次數
+    total_count = Column(Integer, default=0)     # 總作答次數
     last_tested_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="weaknesses")
@@ -207,7 +209,7 @@ def delete_chat_session(session_id: str):
         db.close()
 
 def update_weakness(topic: str, correct: bool):
-    """更新弱點記憶分數：答錯 +1，答對則減少（最低至 0）"""
+    """更新弱點記憶分數：答錯 +1，答對則減少（最低至 0），並更新總作答統計"""
     db = SessionLocal()
     try:
         user_id = get_default_user_id()
@@ -216,26 +218,30 @@ def update_weakness(topic: str, correct: bool):
                      .first()
         
         if not weakness:
-            # 首次建立，如果答錯則 error_count = 1，答對則 0
+            # 首次建立
             weakness = WeaknessMemory(
                 user_id=user_id, 
                 topic=topic, 
                 error_count=1 if not correct else 0,
+                correct_count=1 if correct else 0,
+                total_count=1,
                 last_tested_at=datetime.utcnow()
             )
             db.add(weakness)
         else:
-            if not correct:
-                weakness.error_count += 1
-            else:
+            weakness.total_count += 1
+            if correct:
+                weakness.correct_count += 1
                 weakness.error_count = max(0, weakness.error_count - 1)
+            else:
+                weakness.error_count += 1
             weakness.last_tested_at = datetime.utcnow()
         db.commit()
     finally:
         db.close()
 
 def get_weaknesses() -> List[Dict[str, Any]]:
-    """獲取目前的弱點清單"""
+    """獲取目前的弱點清單，包含正確率與熟練度統計"""
     db = SessionLocal()
     try:
         user_id = get_default_user_id()
@@ -243,7 +249,22 @@ def get_weaknesses() -> List[Dict[str, Any]]:
                   .filter(WeaknessMemory.user_id == user_id)\
                   .order_by(WeaknessMemory.error_count.desc())\
                   .all()
-        return [{"topic": i.topic, "error_count": i.error_count, "last_tested_at": i.last_tested_at.isoformat()} for i in items]
+        
+        result = []
+        for i in items:
+            total = i.total_count if i.total_count is not None else 0
+            correct = i.correct_count if i.correct_count is not None else 0
+            mastery_rate = (correct / total * 100.0) if total > 0 else 0.0
+            
+            result.append({
+                "topic": i.topic,
+                "error_count": i.error_count if i.error_count is not None else 0,
+                "correct_count": correct,
+                "total_count": total,
+                "mastery_rate": round(mastery_rate, 1),
+                "last_tested_at": i.last_tested_at.isoformat() if i.last_tested_at else datetime.utcnow().isoformat()
+            })
+        return result
     finally:
         db.close()
 
